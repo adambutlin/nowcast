@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+*.pyc
+*.pyo
+data/
+*_backtest.csv
+*_metrics.csv
+*_spa.csv
+*_nowcast.csv
+*.log
+*.png
