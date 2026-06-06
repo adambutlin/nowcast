@@ -67,9 +67,9 @@ class TestRollingWindow(unittest.TestCase):
                 return np.zeros(len(test))
 
         RollingDummy().backtest(df, ["f1", "f2"], "cpi_yoy", start_year=2015)
-        # With WINDOW=24, train should be at most 24 months (or fallback 60 if not enough data)
+        # With WINDOW=24 and min_train=24, train should be at most 24 months
         for sz in sizes:
-            self.assertLessEqual(sz, 60)
+            self.assertLessEqual(sz, 24)
 
 
 class TestAllModels(unittest.TestCase):
@@ -84,7 +84,7 @@ class TestAllModels(unittest.TestCase):
                 self.assertEqual(m.WINDOW, 60, f"{m.name} should have WINDOW=60")
             elif "2Y" in m.name:
                 self.assertEqual(m.WINDOW, 24, f"{m.name} should have WINDOW=24")
-            elif m.name not in ("DFM-k2",):
+            elif m.name not in ("DFM-k2", "LSTAR"):
                 self.assertIsNone(m.WINDOW, f"{m.name} should have WINDOW=None")
 
     def test_all_model_names_unique(self):

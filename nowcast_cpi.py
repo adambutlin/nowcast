@@ -670,7 +670,9 @@ def main():
     df_raw, status = F.build_matrix()
     live_facs  = [n for n, s in status.items()
                   if s != "unavailable" and n != "cpi_yoy"
-                  and F.REGISTRY.get(n, {}).get("region") != "US"]
+                  and F.REGISTRY.get(n, {}).get("region") != "US"
+                  and n != "uk_rents"          # collinear with uk_rents_lag1 after pub-lag
+                  and n not in ("uk_cpih", "uk_services_cpi")]  # CPI measures predicting CPI — circular
     target     = "cpi_yoy"
     if target not in df_raw.columns:
         sys.exit("cpi_yoy unavailable — check dbnomics / data/ CSV.")

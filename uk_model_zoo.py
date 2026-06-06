@@ -93,7 +93,7 @@ class BaseModel:
     def _fit_predict_year(self, train, test, factors, target):
         raise NotImplementedError
 
-    def backtest(self, df, factors, target, start_year=START_YEAR_DEFAULT, min_train=60):
+    def backtest(self, df, factors, target, start_year=START_YEAR_DEFAULT, min_train=24):
         d = _prep(df, factors, target)
         rows = []
         for yr in sorted(y for y in d.index.year.unique() if y >= start_year):
@@ -126,23 +126,71 @@ class BaseModel:
     def regimes(self, df, factors, target):
         return None, {}
 
+    @staticmethod
+    def _nowcast_row(df, factors, target):
+        """
+        Return (feature_row, nowcast_date) for the first unreleased CPI month.
+
+        'First unreleased' = the earliest index where target is NaN.
+        Ragged-edge ONS series (uk_rents_lag1, uk_vacancies) are forward-filled
+        from the most recent published value — exactly what a real-time analyst
+        would do when a monthly ONS release has not yet been ingested by dbnomics.
+
+        Financial daily series (Brent, GBP/USD, VIX) are already complete for
+        the target month because they are pulled as month-end closes via FRED.
+
+        The row always includes the target column (set to NaN) so state-space
+        models that call test[target] do not raise KeyError; they should treat
+        NaN target as a missing observation.
+
+        ALFRED note: financial FRED series carry zero revision risk (market prices).
+        ONS vintage data cannot be verified without the ONS real-time API; use of
+        final revised values in training is a known approximation.
+        """
+        feat_cols = list(dict.fromkeys(factors))
+        # Identify the first month AFTER the last known CPI release.
+        # Using df[target].isna().index[0] would incorrectly pick up pre-history
+        # NaN rows (before D7G7 began in 1989) when the full raw matrix is passed.
+        if target in df.columns:
+            known = df[target].dropna()
+            if len(known) > 0:
+                last_known = known.index[-1]
+                trailing = df.index[df.index > last_known]
+                nowcast_date = trailing[0] if len(trailing) > 0 else last_known
+            else:
+                nowcast_date = df.index[-1]
+        else:
+            nowcast_date = df.index[-1]
+
+        # Include target column so models can access it (remains NaN = unreleased)
+        all_cols = list(dict.fromkeys(feat_cols + ([target] if target in df.columns else [])))
+        feat_df = df[all_cols].reindex([nowcast_date])
+        ffilled  = df[all_cols].ffill().reindex([nowcast_date])
+        row = feat_df.fillna(ffilled)
+        # Target must stay NaN — it's the thing we're trying to predict
+        if target in row.columns:
+            row[target] = np.nan
+
+        # NaN check on factor columns only (target NaN is expected)
+        if row[feat_cols].isna().any(axis=1).iloc[0]:
+            return None, nowcast_date   # still some factor genuinely unavailable
+
+        return row, nowcast_date
+
     def nowcast(self, df, factors, target):
         """
-        Fit on all rows where factors AND target are known.
-        Predict on the most recent row where factors are complete
-        (target may be NaN). Returns (prediction, nowcast_date) or (np.nan, None).
+        Fit on all months with known target+features; predict the first unreleased
+        CPI month using a ragged-edge-corrected feature row.
+        Returns (prediction, nowcast_date) or (np.nan, None).
         """
         d = _prep(df, factors, target)
         if len(d) == 0:
             return np.nan, None
-        feat_cols = list(dict.fromkeys(factors))
-        latest = df[feat_cols].dropna()
-        if len(latest) == 0:
-            return np.nan, None
-        latest_row = latest.iloc[[-1]]
-        nowcast_date = latest_row.index[0]
+        row, nowcast_date = self._nowcast_row(df, factors, target)
+        if row is None:
+            return np.nan, nowcast_date
         try:
-            preds = self._fit_predict_year(d, latest_row, factors, target)
+            preds = self._fit_predict_year(d, row, factors, target)
             return float(preds[0]) if len(preds) > 0 else np.nan, nowcast_date
         except Exception:
             return np.nan, nowcast_date
@@ -189,6 +237,27 @@ class DFM(BaseModel):
                  for k, v in res.params.items() if k.startswith("loading.f1.")}
         s = pd.Series({f: loads.get(f, np.nan) for f in factors}).dropna()
         return s, self.importance_type
+
+    def nowcast(self, df, factors, target):
+        """Fit DFM on all known data; forecast 1 step from final model state."""
+        from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
+        d = _prep(df, factors, target)
+        if len(d) == 0:
+            return np.nan, None
+        _, nowcast_date = self._nowcast_row(df, factors, target)
+        if self.WINDOW is not None:
+            cutoff = d.index[-1] - pd.DateOffset(months=self.WINDOW - 1)
+            d = d[d.index >= cutoff]
+        obs = factors + [target]
+        z, mu, sd = _zscore(d, obs)
+        try:
+            res = DynamicFactor(z.dropna(), k_factors=self.k, factor_order=1,
+                                error_order=1).fit(maxiter=200, disp=False)
+            fc = res.forecast(steps=1)
+            val = fc[target].values[0] if hasattr(fc, "columns") else np.asarray(fc)[0]
+            return float(val * sd[target] + mu[target]), nowcast_date
+        except Exception:
+            return np.nan, nowcast_date
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -255,17 +324,24 @@ class RAMM_LGBM(BaseModel):
         if len(d) == 0:
             return np.nan, None
         feats = self._feats(factors)
+        # _add_lag appends cpi_lag1 = target.shift(1); the nowcast month's lag
+        # = last released CPI value, which is always available
         both = self._add_lag(df, target)
-        latest = both[feats].dropna()
-        if len(latest) == 0:
-            return np.nan, None
-        latest_row = latest.iloc[[-1]]
-        nowcast_date = latest_row.index[0]
+        # Use ragged-edge-corrected row for the first unreleased CPI month
+        base_row, nowcast_date = self._nowcast_row(df, factors, target)
+        if base_row is None:
+            return np.nan, nowcast_date
+        # Augment the base feature row with cpi_lag1
+        lag_val = both.loc[nowcast_date, self.LAG] if nowcast_date in both.index else np.nan
+        if not np.isfinite(lag_val):
+            return np.nan, nowcast_date
+        latest_row = base_row.copy()
+        latest_row[self.LAG] = lag_val
         tr = self._add_lag(d, target).dropna(subset=feats + [target])
         try:
             m = self._model(feats)
             m.fit(tr[feats], tr[target])
-            return float(m.predict(latest_row)[0]), nowcast_date
+            return float(m.predict(latest_row[feats])[0]), nowcast_date
         except Exception:
             return np.nan, nowcast_date
 
@@ -380,6 +456,40 @@ class TVP(BaseModel):
         s = pd.Series(contrib.mean(axis=0), index=col_names)
         return s[factors], self.importance_type
 
+    def nowcast(self, df, factors, target):
+        """
+        Run Kalman on all training data; predict 1 step ahead using the final
+        state (beta) without an update step — no realized target needed.
+        """
+        d = _prep(df, factors, target)
+        if len(d) == 0:
+            return np.nan, None
+        row, nowcast_date = self._nowcast_row(df, factors, target)
+        if row is None:
+            return np.nan, nowcast_date
+        if self.WINDOW is not None:
+            cutoff = d.index[-1] - pd.DateOffset(months=self.WINDOW - 1)
+            d = d[d.index >= cutoff]
+        try:
+            fz_mu = d[factors].mean()
+            fz_sd = d[factors].std().replace(0, 1)
+            dd = d.copy()
+            dd[factors] = (dd[factors] - fz_mu) / fz_sd
+            X = self._design(dd, factors, target)
+            y = dd[target].values
+            ok = np.isfinite(X).all(1) & np.isfinite(y)
+            R = np.nanvar(np.diff(y[ok])) + 1e-6
+            Q = np.eye(X.shape[1]) * R * self.delta
+            _, betas = self._kalman(X[ok], y[ok], R, Q)
+            final_beta = betas[-1]
+            # Nowcast feature: [const=1, ar1=last known CPI, normalized factors]
+            ar1 = float(d[target].iloc[-1])
+            row_fz = (row[factors] - fz_mu) / fz_sd
+            x_now = np.concatenate([[1.0], [ar1], row_fz.values[0]])
+            return float(x_now @ final_beta), nowcast_date
+        except Exception:
+            return np.nan, nowcast_date
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. HMM — univariate Markov-switching regression
@@ -438,6 +548,29 @@ class HMM(BaseModel):
                             "n_regimes": self.k, "current": labels.iloc[-1]}
         except Exception as e:
             return None, {"type": "none", "error": str(e)[:40]}
+
+    def nowcast(self, df, factors, target):
+        """
+        Fit HMM on all known CPI; propagate filtered regime probs 1 step;
+        predict regime-weighted mean. HMM is univariate so factors are unused.
+        """
+        d = _prep(df, factors, target)
+        if len(d) == 0:
+            return np.nan, None
+        _, nowcast_date = self._nowcast_row(df, factors, target)
+        if self.WINDOW is not None:
+            cutoff = d.index[-1] - pd.DateOffset(months=self.WINDOW - 1)
+            d = d[d.index >= cutoff]
+        try:
+            res = self._fit(d[target])
+            named = _named(res)
+            means = np.array([named.get(f"const[{i}]", np.nan) for i in range(self.k)])
+            P = (res.regime_transition[:, :, 0] if res.regime_transition.ndim == 3
+                 else res.regime_transition)
+            probs = _last_probs(res, self.k) @ P.T
+            return float(np.nansum(probs * means)), nowcast_date
+        except Exception:
+            return np.nan, nowcast_date
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -552,6 +685,7 @@ class LSTAR(BaseModel):
     name = "LSTAR"
     importance_type = "permutation ΔRMSE"
     has_regimes = True
+    WINDOW = 60   # LM/TRF diverges on long expanding windows; cap at 5Y
 
     def _design(self, d, factors, target):
         y    = d[target].values
@@ -573,8 +707,10 @@ class LSTAR(BaseModel):
         yl, Xk, yk = ylag[ok], X[ok], y[ok]
         p0 = np.concatenate([[yk.mean(), 0.3, 0.0, 0.0, 1.0, np.median(yl)],
                              np.zeros(k)])
+        lo = [-np.inf, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf] + [-5.0] * k
+        hi = [ np.inf,  np.inf,  np.inf,  np.inf,  np.inf,  np.inf] + [ 5.0] * k
         res = least_squares(self._resid, p0, args=(yl, Xk, yk, k),
-                            max_nfev=2000, method="lm")
+                            max_nfev=2000, method="trf", bounds=(lo, hi))
         return res.x
 
     def _predict(self, p, ylag, X, k):
@@ -625,6 +761,37 @@ class LSTAR(BaseModel):
                             "n_regimes": 2, "current": labels.iloc[-1]}
         except Exception as e:
             return None, {"type": "none", "error": str(e)[:40]}
+
+    def nowcast(self, df, factors, target):
+        """
+        LSTAR nowcast: fit on windowed training data; predict with ylag = last
+        known CPI (avoids the ylag=NaN bug from shift(1) on a 1-row test slice).
+        """
+        d = _prep(df, factors, target)
+        if len(d) == 0:
+            return np.nan, None
+        row, nowcast_date = self._nowcast_row(df, factors, target)
+        if row is None:
+            return np.nan, nowcast_date
+        if self.WINDOW is not None:
+            cutoff = d.index[-1] - pd.DateOffset(months=self.WINDOW - 1)
+            train = d[d.index >= cutoff]
+        else:
+            train = d
+        try:
+            fz_mu = train[factors].mean()
+            fz_sd = train[factors].std().replace(0, 1)
+            dd = train.copy()
+            dd[factors] = (dd[factors] - fz_mu) / fz_sd
+            k = len(factors)
+            y, ylag, X = self._design(dd, factors, target)
+            p = self._fit_params(ylag, X, y, k)
+            # ar1 = last released CPI; factors normalized on training stats
+            ylag_now = np.array([float(train[target].iloc[-1])])
+            X_now = ((row[factors] - fz_mu) / fz_sd).values
+            return float(self._predict(p, ylag_now, X_now, k)), nowcast_date
+        except Exception:
+            return np.nan, nowcast_date
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -979,11 +1146,14 @@ class ElasticNet(BaseModel):
             return np.nan, None
         feats = self._feats(factors)
         both = self._add_lag(df, target)
-        latest = both[feats].dropna()
-        if len(latest) == 0:
-            return np.nan, None
-        latest_row = latest.iloc[[-1]]
-        nowcast_date = latest_row.index[0]
+        base_row, nowcast_date = self._nowcast_row(df, factors, target)
+        if base_row is None:
+            return np.nan, nowcast_date
+        lag_val = both.loc[nowcast_date, self.LAG] if nowcast_date in both.index else np.nan
+        if not np.isfinite(lag_val):
+            return np.nan, nowcast_date
+        latest_row = base_row.copy()
+        latest_row[self.LAG] = lag_val
         tr = self._add_lag(d, target).dropna(subset=feats + [target])
         scaler = StandardScaler()
         X_tr = scaler.fit_transform(tr[feats])

@@ -98,6 +98,47 @@ def _boe_spot_5y(zip_url):
     return pd.concat(frames).sort_index()["y5"]
 
 
+def _rents_lag1():
+    """
+    ONS L522.M rents YoY lagged 1 month, extended by 1 forward row.
+
+    The shift(1) makes 2026-04-30 hold March YoY, leaving May with no entry.
+    Appending the unshifted current-month YoY at +1 month means _nowcast_row's
+    ffill picks up April YoY (not March) for the May nowcast date.
+    """
+    raw = _dbnomics("ONS", "MM23", "L522.M")
+    yoy = raw.pct_change(12).mul(100)
+    shifted = yoy.shift(1)
+    # Add one-month-ahead row with the most-recently-published rents YoY
+    next_idx = shifted.index[-1] + pd.DateOffset(months=1)
+    extension = pd.Series([yoy.iloc[-1]], index=[next_idx])
+    return pd.concat([shifted, extension]).resample("ME").last()
+
+
+def _gas_eu_ttf():
+    """
+    European natural gas: daily TTF front-month (2017+) blended onto IMF monthly
+    (1960+). TTF is rescaled to IMF units over the overlap period so log-returns
+    are continuous across the splice point.
+    """
+    imf = _fred("PNGASEUUSDM")
+    try:
+        import yfinance as yf
+        raw = yf.download("TTF=F", start="2017-01-01", auto_adjust=True,
+                          progress=False)
+        c = (raw[("Close", "TTF=F")] if isinstance(raw.columns, pd.MultiIndex)
+             else raw["Close"])
+        ttf = c.resample("ME").last().dropna()
+        overlap = imf.index.intersection(ttf.index)
+        scale = (imf[overlap].mean() / ttf[overlap].mean()
+                 if len(overlap) >= 12 else 1.0)
+        combined = imf.copy()
+        combined[ttf.index] = ttf * scale
+        return combined.dropna()
+    except Exception:
+        return imf
+
+
 def _uk_breakeven():
     nom = _boe_spot_5y(BOE_BASE + "glcinflationmonthedata.zip")
     real = _boe_spot_5y(BOE_BASE + "glcrealmonthedata.zip")
@@ -165,12 +206,11 @@ REGISTRY = {
         note="FRED Henry Hub gas (DHHNGSP). US proxy; UK NBP/TTF not free. pub_lag=0. "
              "region=US — excluded from UK-only runs."),
     "gas_eu": dict(
-        fetch=lambda: _fred("PNGASEUUSDM"), transform="logret",
+        fetch=_gas_eu_ttf, transform="logret",
         pub_lag=0, candidate=True, csv="gas_eu.csv",
-        note="IMF/FRED European natural gas price (PNGASEUUSDM, USD/mmBtu, 1960-). "
-             "UK imported LNG proxy — more relevant to UK CPI than Henry Hub. "
-             "pub_lag=0. TTF front-month futures (yfinance TTF=F) preferred post-2009; "
-             "override by dropping data/gas_eu.csv."),
+        note="European natural gas: daily TTF front-month (2017+, yfinance TTF=F) "
+             "rescaled onto IMF PNGASEUUSDM (1960+). pub_lag=0: daily market price "
+             "available same day. Override with data/gas_eu.csv."),
     "oil_vol_6m": dict(
         fetch=lambda: np.log(_fred("DCOILBRENTEU")).diff().rolling(6).std(),
         transform="level", pub_lag=0, candidate=True, csv="oil_vol_6m.csv",
@@ -200,11 +240,13 @@ REGISTRY = {
              "published same day as CPI — use apply_publication_lags() to avoid "
              "contemporaneous leakage. Leakage lift at lag=0: +0.209pp RMSE."),
     "uk_rents_lag1": dict(
-        fetch=lambda: _dbnomics("ONS", "MM23", "L522.M").pct_change(12).mul(100).shift(1),
+        fetch=_rents_lag1,
         transform="level",
         pub_lag=0, candidate=False, csv="uk_rents_lag1.csv",
         note="ONS rents (L522.M) YoY lagged 1 month — real-time safe. pub_lag=0 "
-             "(the 1-month lag is baked into the fetch). Spearman rho=0.922 at lag=1."),
+             "(the 1-month lag is baked into the fetch). Extended by one forward row "
+             "so _nowcast_row ffills the most-recently-published rents YoY. "
+             "Spearman rho=0.922 at lag=1."),
     "uk_vacancies": dict(
         fetch=lambda: _dbnomics("ONS", "UNEM", "AP2Y.M"), transform="logret",
         pub_lag=1, candidate=True, csv="uk_vacancies.csv",
