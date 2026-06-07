@@ -1767,7 +1767,7 @@ def dm_test(e1, e2, h=1):
 def score_backtest(bt, name="model"):
     """
     Full scoring for a backtest DataFrame with columns [actual, pred].
-    Returns dict: rmse, mae, dir_acc, error_var, mape, bias, mz_slope, mz_intercept, n.
+    Returns dict: rmse, mae, dir_acc, error_var, mape, bias, mz_slope, mz_intercept, mz_pval, n.
 
     mz_slope / mz_intercept: Mincer-Zarnowitz efficiency test (OLS of actual on pred).
     Efficient forecast → intercept ≈ 0, slope ≈ 1. Deviation indicates bias or inefficiency.
@@ -1775,7 +1775,7 @@ def score_backtest(bt, name="model"):
     if bt is None or len(bt) == 0:
         return dict(model=name, rmse=np.nan, mae=np.nan, dir_acc=np.nan,
                     error_var=np.nan, mape=np.nan, bias=np.nan,
-                    mz_slope=np.nan, mz_intercept=np.nan, n=0)
+                    mz_slope=np.nan, mz_intercept=np.nan, mz_pval=np.nan, n=0)
     e = bt["actual"] - bt["pred"]
     abs_pct = np.abs(e / bt["actual"].replace(0, np.nan)) * 100
     # Directional accuracy: did we correctly predict month-over-month direction of change?
@@ -1788,6 +1788,21 @@ def score_backtest(bt, name="model"):
         mz_slope, mz_intercept, _, _, _ = _lr(bt["pred"].values, bt["actual"].values)
     except Exception:
         mz_slope, mz_intercept = np.nan, np.nan
+    # MZ joint F-test: H0: intercept=0, slope=1 (efficient forecast)
+    try:
+        from scipy.stats import f as _f_dist
+        n_mz = len(bt)
+        _pred_v   = bt["pred"].values
+        _actual_v = bt["actual"].values
+        _X = np.column_stack([np.ones(n_mz), _pred_v])
+        _beta, _, _, _ = np.linalg.lstsq(_X, _actual_v, rcond=None)
+        _sse_unr = float(((_actual_v - _X @ _beta)**2).sum())
+        _sse_r   = float(((_actual_v - _pred_v)**2).sum())   # restricted: intercept=0, slope=1
+        _denom   = _sse_unr / max(n_mz - 2, 1)
+        _F_mz    = ((_sse_r - _sse_unr) / 2) / _denom if _denom > 0 else np.nan
+        mz_pval  = float(1 - _f_dist.cdf(_F_mz, 2, n_mz - 2)) if np.isfinite(_F_mz) else np.nan
+    except Exception:
+        mz_pval = np.nan
     return dict(
         model        = name,
         rmse         = float(np.sqrt((e**2).mean())),
@@ -1798,6 +1813,7 @@ def score_backtest(bt, name="model"):
         bias         = float(e.mean()),
         mz_slope     = float(mz_slope),
         mz_intercept = float(mz_intercept),
+        mz_pval      = float(mz_pval),
         n            = len(bt),
     )
 

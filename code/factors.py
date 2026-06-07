@@ -779,7 +779,7 @@ def apply_publication_lags(df, factor_names, registry=None):
     return df_out
 
 
-def screen_candidates(df, target, threshold=0.001):
+def screen_candidates(df, target, threshold=0.001, always_keep=None):
     """
     Shapley-based candidate factor screening.
 
@@ -787,9 +787,12 @@ def screen_candidates(df, target, threshold=0.001):
     mean |SHAP| per factor, and returns those above threshold.
 
     Args:
-        df:        DataFrame containing factor columns and target column.
-        target:    Name of the target column in df.
-        threshold: Minimum mean |SHAP| to retain a candidate (default 0.001).
+        df:          DataFrame containing factor columns and target column.
+        target:      Name of the target column in df.
+        threshold:   Minimum mean |SHAP| to retain a candidate (default 0.001).
+        always_keep: List of candidate factor names to always retain regardless of SHAP score.
+                     Useful for episodic factors (e.g. gas_eu during energy shocks) that
+                     score low in full-sample SHAP but matter in specific regimes.
 
     Returns:
         List of factor names (candidates only) with mean |SHAP| >= threshold.
@@ -820,6 +823,11 @@ def screen_candidates(df, target, threshold=0.001):
     importance = pd.Series(np.abs(sv).mean(axis=0), index=X.columns)
 
     kept = list(importance[importance >= threshold].index)
+    if always_keep:
+        forced = [c for c in always_keep if c in candidates and c not in kept]
+        if forced:
+            print(f"  [screen_candidates] force-kept (always_keep): {forced}")
+        kept = list(set(kept) | set(c for c in always_keep if c in candidates))
     dropped = [f for f in candidates if f not in kept]
     if dropped:
         print(f"  [screen_candidates] dropped {dropped} (mean |SHAP| < {threshold})")

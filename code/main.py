@@ -270,18 +270,18 @@ def spa_table(bt_dict, benchmark_name="AR(1)"):
     rows = []
     for name, bt in bt_dict.items():
         if bt is None or len(bt) == 0:
-            rows.append(dict(model=name, DM=np.nan, p=np.nan, beats="?"))
+            rows.append(dict(model=name, DM=np.nan, p=np.nan, beats="?", n=0))
             continue
         common = bench.index.intersection(bt.index)
         if len(common) < 10:
-            rows.append(dict(model=name, DM=np.nan, p=np.nan, beats="?"))
+            rows.append(dict(model=name, DM=np.nan, p=np.nan, beats="?", n=0))
             continue
         e_bench = (bench.loc[common, "actual"] - bench.loc[common, "pred"]).values
         e_model = (bt.loc[common, "actual"] - bt.loc[common, "pred"]).values
         dm, p = Z.dm_test(e_bench, e_model)
         sig = "**" if p < 0.05 else ("*" if p < 0.10 else "")
         beats = f"yes{sig}" if dm > 0 and p < 0.10 else ("no" if dm <= 0 else f"~{sig}")
-        rows.append(dict(model=name, DM=round(dm, 2), p=round(p, 3), beats=beats))
+        rows.append(dict(model=name, DM=round(dm, 2), p=round(p, 3), beats=beats, n=len(common)))
     return pd.DataFrame(rows).set_index("model")
 
 
@@ -302,7 +302,7 @@ def gw_test(e1, e2, h=1):
     XtX_inv = np.linalg.pinv(X.T @ X)
     beta = XtX_inv @ X.T @ d_curr.values
     resid = d_curr.values - X @ beta
-    s2 = resid @ resid / (n - 2)
+    s2 = resid @ resid / max(len(d_curr) - 2, 1)
     V = s2 * XtX_inv
     # Wald stat (joint test on both coefficients)
     W = beta @ np.linalg.pinv(V) @ beta
@@ -343,17 +343,17 @@ def _regime_labels_hmm(series, k=2):
 def _regime_labels_hmm_recursive(series, k=2, min_fit=60):
     """Fit HMM on train<yr, forward-filter with fixed params on train+test. No lookahead."""
     from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
-    labels = pd.Series(index=series.index, dtype=int)
+    labels = pd.Series(index=series.index, dtype=object)
     dates = series.index
     years = sorted(series.index.year.unique())
     for yr in years:
         train_mask = dates.year < yr
         if train_mask.sum() < min_fit:
-            labels[dates.year == yr] = 0
+            labels[dates.year == yr] = "r0"
             continue
         train = series[train_mask].dropna()
         if len(train) < min_fit:
-            labels[dates.year == yr] = 0
+            labels[dates.year == yr] = "r0"
             continue
         try:
             res = MarkovRegression(train, k_regimes=k, trend="c", switching_variance=True).fit(disp=False)
@@ -365,9 +365,9 @@ def _regime_labels_hmm_recursive(series, k=2, min_fit=60):
             fp = fp if fp.shape[1] == k else fp.T   # ensure (nobs, k)
             eval_mask = eval_series.index.year == yr
             yr_labels = fp[eval_mask].argmax(axis=1)
-            labels[dates.year == yr] = yr_labels
+            labels[dates.year == yr] = [f"r{int(v)}" for v in yr_labels]
         except Exception:
-            labels[dates.year == yr] = 0
+            labels[dates.year == yr] = "r0"
     return labels
 
 
@@ -754,6 +754,10 @@ def main():
                     help="disable Shapley factor screening")
     ap.add_argument("--shap-threshold", type=float, default=0.001,
                     help="mean |SHAP| threshold for screen_candidates (default 0.001)")
+    ap.add_argument("--always-keep", nargs="*", default=["gas_eu"],
+                    help="factor names to always keep after SHAP screen regardless of SHAP score (default: gas_eu)")
+    ap.add_argument("--no-always-keep", dest="always_keep", action="store_const", const=[],
+                    help="disable always-keep list (allow SHAP to drop gas_eu etc.)")
     ap.add_argument("--target", default="cpi_yoy",
                     help="target series: cpi_yoy (default) or cpi_yoy_long for extended history")
     args = ap.parse_args()
@@ -788,7 +792,9 @@ def main():
 
     if args.shap_screen:
         print(f"\nRunning Shapley factor screening (threshold={args.shap_threshold}) …")
-        kept = F.screen_candidates(df, target, threshold=args.shap_threshold)
+        screen_df = df[df.index.year < args.start]
+        kept = F.screen_candidates(screen_df, target, threshold=args.shap_threshold,
+                                    always_keep=args.always_keep)
         core = [n for n in live_facs if not F.REGISTRY.get(n, {}).get("candidate", False)]
         live_facs = [f for f in live_facs if f in kept or f in core]
         print(f"  Live factors after screening: {live_facs}")
@@ -797,6 +803,17 @@ def main():
           f"{[f for f in live_facs if F.REGISTRY.get(f,{}).get('pub_lag',1)==0]}")
     print(f"  pub_lag≥1 (lagged ONS/other): "
           f"{[f for f in live_facs if F.REGISTRY.get(f,{}).get('pub_lag',1)>=1]}")
+
+    # ── factor correlation matrix (for diversification check) ───────────────
+    fac_df = df[live_facs].dropna()
+    if len(fac_df) > 10 and len(live_facs) > 1:
+        corr_facs = fac_df.corr(method="spearman")
+        print(f"\n── Factor Spearman Correlation Matrix ({len(live_facs)} factors) ──")
+        print(corr_facs.round(2).to_string())
+        # effective rank = sum(eigenvalues)/max(eigenvalue)
+        eigvals = np.linalg.eigvalsh(corr_facs.values)
+        eff_rank = eigvals.sum() / eigvals.max() if eigvals.max() > 0 else float("nan")
+        print(f"  Effective rank (sum/max eigenvalue): {eff_rank:.1f} of {len(live_facs)}")
 
     # ── run all models ──────────────────────────────────────────────────────
     models   = Z.all_models()
@@ -857,11 +874,15 @@ def main():
 
     # ── superstar combined ───────────────────────────────────────────────────
     if not spa_prelim.empty:
-        superstar_names = [n for n in spa_prelim.index
-                           if spa_prelim.loc[n, "DM"] > 0
-                           and spa_prelim.loc[n, "p"] < 0.10
-                           and n not in ("Combined-Static","Combined-Dynamic","AR(1)")]
-        print(f"  Superstar models: {superstar_names}")
+        from statsmodels.stats.multitest import multipletests
+        cands = spa_prelim[(spa_prelim["DM"] > 0) &
+                           (~spa_prelim.index.isin(["Combined-Static","Combined-Dynamic","AR(1)"]))].copy()
+        if len(cands) > 0:
+            reject_bh, _, _, _ = multipletests(cands["p"].fillna(1.0), alpha=0.10, method="fdr_bh")
+            superstar_names = list(cands.index[reject_bh])
+        else:
+            superstar_names = []
+        print(f"  Superstar BH-corrected (FDR 10%): {superstar_names}")
         bt_super = combine_subset(bt_dict, superstar_names)
         bt_dict["Combined-Superstar"] = bt_super if len(bt_super) else None
         if len(bt_super):
@@ -914,18 +935,36 @@ def main():
             gw_ps[name]    = round(p, 3) if not np.isnan(p) else float("nan")
         mdf["gw_stat"] = pd.Series(gw_stats)
         mdf["gw_p"]    = pd.Series(gw_ps)
-    cols = ["rmse", "mae", "dir_acc", "beats_ar1", "mz_slope", "mz_intercept",
+    cols = ["rmse", "mae", "dir_acc", "beats_ar1", "mz_slope", "mz_intercept", "mz_pval",
             "error_var", "mape", "bias", "gw_stat", "gw_p", "n"]
     print_cols = [c for c in cols if c in mdf.columns]
     print(mdf[print_cols].to_string(
         float_format=lambda x: f"{x:8.3f}" if isinstance(x, float) else str(x)))
+    if ar1_r is not None:
+        poor = mdf[mdf["rmse"] > 2.0 * ar1_r].index.tolist()
+        if poor:
+            print(f"\n  ⚠ Models >2\xd7 AR(1) RMSE (excluded from ensembles): {poor}")
 
     # ── SUBSAMPLE RMSE ───────────────────────────────────────────────────────
     sub_periods = [("2015-19", 2015, 2019), ("2020-21", 2020, 2021),
                    ("2022-23", 2022, 2023), ("2024+", 2024, 2099)]
     sub_df = subsample_rmse(bt_dict, sub_periods)
     print("\n── Subsample RMSE ──")
-    print(sub_df.sort_values("2015-19").to_string())
+    sub_sorted = sub_df.sort_values("2015-19")
+    # Add approximate 95% CI: ±RMSE * 1.96/sqrt(2n) per cell
+    # Count obs per sub-period from bt_dict
+    sub_n = {}
+    for label, y0, y1 in sub_periods:
+        ar1_bt = bt_dict.get("AR(1)")
+        if ar1_bt is not None and len(ar1_bt) > 0:
+            sub_n[label] = int(((ar1_bt.index.year >= y0) & (ar1_bt.index.year <= y1)).sum())
+        else:
+            sub_n[label] = 1
+    print(sub_sorted.to_string(float_format=lambda x: f"{x:.3f}"))
+    ci_strs = {label: f"  n={sub_n.get(label,0)}, \xb1{1.96/np.sqrt(max(2*sub_n.get(label,1),1)):.2f}\xd7RMSE"
+               for label, *_ in sub_periods}
+    for label, note in ci_strs.items():
+        print(f"    [{label}]{note}")
 
     # ── DM / SPA TABLE ──────────────────────────────────────────────────────
     print("\n" + "═"*60)
