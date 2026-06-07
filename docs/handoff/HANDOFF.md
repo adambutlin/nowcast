@@ -702,3 +702,86 @@ FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore code/no
 4. **Push to GitHub**: mirror at `/Users/Adam/Documents/home/quant/nowcast/` → `adambutlin/nowcast` — no local git in nowcast/ currently.
 
 ---
+---
+
+## Handoff: 2026-06-07T07:49:19Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: auto
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/65b6c120-cad7-4be6-9a13-fac8a165c303.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast/code
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+(unavailable)
+
+### Git Snapshot
+- Branch: main
+- Status:
+RM code/nowcast_cpi.py -> code/main.py
+D  code/markov_dfm.py
+D  code/nowcaster.py
+D  code/ramm_lgbm_v1.py
+D  code/test_ramm_lgbm_v1.py
+RM code/test_nowcast_cpi.py -> code/tests/test_main.py
+ M code/uk_model_zoo.py
+ M docs/handoff/HANDOFF.md
+?? ".venv 2"
+- Recent commits:
+0a5a617 refactor: reorganize repo — move code to code/, docs to docs/, remove obsolete files
+57843df fix: nowcast for DFM/TVP/HMM/LSTAR; TTF gas; correct rents ffill
+0ab0da1 docs: fill HANDOFF.md with real session summary and resume instructions
+fcca78c feat: UK CPI nowcast system — gas_eu factor, rolling windows, ElasticNet, SHAP screening
+d0777c7 Merge branch 'main' of https://github.com/adambutlin/nowcaster
+
+### Model Summary
+- **Session goal**: debug nowcast_cpi.py end-to-end, fix runnable environment, patch all bugs, then reorganize repo structure
+- **Python 3.10 venv recreated**: old `.venv` was a broken symlink to `ramm-lgbm/.venv`; replaced with real Python 3.10.6 venv at `nowcast/.venv`; `numpy<2` pin required (system Python 3.12 had numpy 2.2.6, incompatible with bottleneck/pyarrow/scipy ABI)
+- **13 bugs patched in `code/uk_model_zoo.py`**: DFM positional column index (`obs.index(target)` not string lookup), TVP R calibration (AR(1) residual variance with NaN guard), SARIMAX/AutoARIMA/VAR frozen multi-step → rolling 1-step-ahead loops, `dir_acc` fix (`pred - actual.shift(1)` not `pred - actual`), `CopulaReg._normal_scores` clip bounds, `MS_DFM.regimes()` factors-only DFM, `RAMM_LGBM.MONO` dict updated for renamed features, `_zscore` NaN std guard
+- **LSTAR added to `all_models()`**: zoo is now 22 models (was 21); `LSTAR.WINDOW=60` (rolling) to prevent TRF optimizer divergence on long expanding windows
+- **`MIDAS_Almon` class deleted**: was dead code (unreachable via all_models); yfinance-based `MIDAS` is the live implementation
+- **Dead scripts deleted**: `code/ramm_lgbm_v1.py`, `code/test_ramm_lgbm_v1.py`, `code/markov_dfm.py` (PyMC-based, superseded), `code/nowcaster.py` (78-line original monolith)
+- **Repo reorganized**: `nowcast_cpi.py` → `code/main.py`; `test_nowcast_cpi.py` → `code/tests/test_main.py`; `code/tests/conftest.py` added to fix sys.path for pytest discovery
+- **15/15 tests passing** after all fixes; committed as `7e67067`
+
+### Handoff Context (paste into next session)
+
+**Canonical working directory:** `/Users/Adam/Documents/home/quant/nowcast/`
+**Git remote:** `adambutlin/nowcast` on GitHub, branch `main`, commit `7e67067`
+
+**Run full backtest:**
+```bash
+cd /Users/Adam/Documents/home/quant/nowcast
+FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore code/main.py \
+  --start 2015 --end 2024 --train-from 1992
+```
+
+**Run tests:**
+```bash
+.venv/bin/python -m pytest code/tests/test_main.py -v
+```
+
+**Key files:**
+- `code/main.py` — main runner (renamed from nowcast_cpi.py)
+- `code/uk_model_zoo.py` — 22-model zoo (all bugs patched)
+- `code/factors.py` — factor registry, `apply_publication_lags()`, `screen_candidates()`
+- `code/tests/test_main.py` — 15 tests
+- `code/tests/conftest.py` — sys.path fix for test imports
+- `code/plot_nowcast_history.py`, `code/nowcast_plot.py`, `code/backtest_2025.py` — utility scripts (kept)
+
+**Architecture reminders:**
+- Zoo: 22 models — DFM, RAMM-LGBM, UCM, TVP, HMM, MS-DFM, LSTAR (WINDOW=60), BVAR, HiddenRF, GBM, MIDAS, BridgeEq, CopulaReg, DFM2, ElasticNet, MedianElasticNet, HuberNet, PCR, RegimeEnsemble, SARIMAX_Model, VAR_Model, AutoARIMA
+- `pub_lag=0`: financial series; `pub_lag=1`: ONS series — shifted by `apply_publication_lags()`
+- SHAP screening default (`--shap-screen`): drops ~11 factors; Combined-Static best at RMSE=0.277 (vs AR(1) 0.495)
+- Blind test 2025+ enforced via `--end 2024`
+
+**Known remaining issues:**
+1. HMM/MS-DFM RMSE very high (2–3) — regime-switching on monthly CPI with few obs
+2. MIDAS/BridgeEq n≈25 (TTF data starts ~2019; earlier obs imputed from spliced IMF series)
+3. `us_ism_pmi`, `uk_paye`, `uk_house_prices` (some dbnomics fetches intermittent — candidates only, not core)
+4. Core CPI project not yet started (user requested `--target cpi_core_yoy` as next step)
+
+---
