@@ -627,9 +627,11 @@ REGISTRY = {
         transform="yoy", pub_lag=2, candidate=True, csv="uk_house_prices.csv",
         note="BIS real residential property price index for UK (FRED QGBR628BIS, "
              "2010=100, 1968+). Quarterly source forward-filled to monthly. "
-             "pub_lag=2: ONS HPI published ~6-8 weeks after reference month. "
-             "ONS timeseries API decommissioned; dbnomics ONS/HPSSA unavailable. "
-             "Drop data/uk_house_prices.csv [date, value=YoY%] for monthly ONS HPI "
+             "pub_lag=2: BIS updates ~1 month after quarter end (Oct=Q3, Jan=Q4, etc.). "
+             "⚠ REAL index (CPI-deflated): YoY(QGBR628BIS) ≈ YoY(nominal_HP) - CPI_yoy. "
+             "This creates mechanical negative correlation with cpi_yoy target — "
+             "SHAP importance reflects deflation arithmetic, not genuine leading power. "
+             "Prefer nominal ONS HPI: drop data/uk_house_prices.csv [date, value=YoY%] "
              "(download from: https://www.gov.uk/government/collections/"
              "uk-house-price-index-reports)."),
     "uk_paye": dict(
