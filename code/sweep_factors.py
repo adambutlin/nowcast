@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--end",        type=int, default=2024)
     ap.add_argument("--train-from", type=int, default=1992)
     ap.add_argument("--target",     default="cpi_yoy")
+    ap.add_argument("--max-k",      type=int, default=None,
+                    help="stop sweep after this many factors (default: all)")
     ap.add_argument("--output",     default="logs/sweep_factors.csv")
     args = ap.parse_args()
 
@@ -95,6 +97,9 @@ def main():
         print(f"  {i:2d}. {fac:<30s} {imp:.6f}")
 
     ranked = importance.index.tolist()
+    if args.max_k is not None:
+        ranked = ranked[: args.max_k]
+        print(f"  (capped at k={args.max_k})")
 
     # ── AR(1) baseline ──────────────────────────────────────────────────────
     bt_ar1   = NC.ar1_backtest(df, target, start_year=args.start, end_year=args.end)

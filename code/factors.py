@@ -309,6 +309,23 @@ def _gbp_eur():
     return (gbp / eur).dropna()                         # EUR per GBP cross-rate
 
 
+def _nominal_uk_hp():
+    """Nominal UK house price index level (for transform='yoy').
+
+    Reconstructs nominal from BIS real index × UK CPI level:
+      nominal_HP_idx = QGBR628BIS × GBRCPIALLMINMEI / 100
+    YoY(nominal) = YoY(real) + YoY(CPI) — no target leakage because
+    pub_lag=2 means the model only sees values from t-2 or earlier.
+    The CSV drop-in (data/uk_house_prices.csv) with ONS nominal HPI takes
+    priority over this fetch — download from gov.uk UK House Price Index.
+    """
+    real_hp  = _fred("QGBR628BIS").resample("ME").ffill()   # BIS real, quarterly→monthly
+    cpi_lvl  = _fred("GBRCPIALLMINMEI")                      # UK CPI level (2015=100)
+    combined = pd.concat([real_hp.rename("hp"),
+                          cpi_lvl.rename("cpi")], axis=1).dropna()
+    return (combined["hp"] * combined["cpi"] / 100).rename("uk_house_prices")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTRY
 # ─────────────────────────────────────────────────────────────────────────────
@@ -620,18 +637,14 @@ REGISTRY = {
              "Fetched directly from ONS VACS01 xlsx (bypasses dbnomics lag). "
              "pub_lag=1: vacancy survey published ~5 weeks after reference month."),
     "uk_house_prices": dict(
-        fetch=lambda: (
-            _fred("QGBR628BIS")           # BIS quarterly real UK residential HPI
-            .resample("ME").ffill()        # forward-fill quarters → monthly
-        ),
+        fetch=_nominal_uk_hp,
         transform="yoy", pub_lag=2, candidate=True, csv="uk_house_prices.csv",
-        note="BIS real residential property price index for UK (FRED QGBR628BIS, "
-             "2010=100, 1968+). Quarterly source forward-filled to monthly. "
+        note="Nominal UK house price index (reconstructed: QGBR628BIS_real × "
+             "GBRCPIALLMINMEI_level / 100). YoY(nominal) = YoY(real) + YoY(CPI). "
              "pub_lag=2: BIS updates ~1 month after quarter end (Oct=Q3, Jan=Q4, etc.). "
-             "⚠ REAL index (CPI-deflated): YoY(QGBR628BIS) ≈ YoY(nominal_HP) - CPI_yoy. "
-             "This creates mechanical negative correlation with cpi_yoy target — "
-             "SHAP importance reflects deflation arithmetic, not genuine leading power. "
-             "Prefer nominal ONS HPI: drop data/uk_house_prices.csv [date, value=YoY%] "
+             "Previously used real QGBR628BIS directly — mechanical negative correlation "
+             "with CPI target due to deflation arithmetic. Nominal corrects this. "
+             "CSV override (data/uk_house_prices.csv) with ONS nominal HPI takes priority "
              "(download from: https://www.gov.uk/government/collections/"
              "uk-house-price-index-reports)."),
     "uk_paye": dict(
