@@ -75,17 +75,16 @@ class TestRollingWindow(unittest.TestCase):
 class TestAllModels(unittest.TestCase):
     def test_all_models_count(self):
         models = Z.all_models()
-        self.assertEqual(len(models), 32)  # 10 base + 10 rolling-5y + 10 rolling-2y + 1 DFM-k2 + 1 ElasticNet
+        self.assertEqual(len(models), 22)  # 21 base + LSTAR
 
-    def test_rolling_models_have_window(self):
+    def test_windowed_models(self):
         models = Z.all_models()
-        for m in models:
-            if "5Y" in m.name:
-                self.assertEqual(m.WINDOW, 60, f"{m.name} should have WINDOW=60")
-            elif "2Y" in m.name:
-                self.assertEqual(m.WINDOW, 24, f"{m.name} should have WINDOW=24")
-            elif m.name not in ("DFM-k2", "LSTAR"):
-                self.assertIsNone(m.WINDOW, f"{m.name} should have WINDOW=None")
+        windowed = {m.name: m.WINDOW for m in models if m.WINDOW is not None}
+        # LSTAR uses 60-month rolling window to avoid divergence on long series
+        self.assertEqual(windowed.get("LSTAR"), 60)
+        for name, w in windowed.items():
+            if name != "LSTAR":
+                self.fail(f"Unexpected WINDOW on {name}={w}")
 
     def test_all_model_names_unique(self):
         models = Z.all_models()
@@ -149,7 +148,7 @@ class TestScreenCandidates(unittest.TestCase):
         self.assertNotIn("f_noise", result)
 
 
-import nowcast_cpi as NC
+import main as NC
 
 
 class TestModelGate(unittest.TestCase):

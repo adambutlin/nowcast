@@ -383,34 +383,6 @@ def _regime_labels_vix(df):
     return pd.Series(np.where(df["vix"] > med, "r1", "r0"), index=df.index).dropna()
 
 
-def _ar1_in_regime(series, regime_label, min_train=20):
-    """AR(1) RMSE evaluated on test periods where regime_label == regime_label.iloc[-1]."""
-    target_regime = regime_label.iloc[-1]
-    rows = []
-    start_yr = series.index.year.min() + 5
-    for yr in sorted(y for y in series.index.year.unique() if y >= start_yr):
-        train = series[series.index.year < yr]
-        test  = series[series.index.year == yr]
-        if len(train) < min_train or len(test) == 0:
-            continue
-        y = train.values
-        mu  = float(y.mean())
-        rho = float(np.corrcoef(y[:-1], y[1:])[0, 1]) if len(y) > 1 else 0.0
-        for idx in test.index:
-            rl = regime_label.reindex([idx])
-            if rl.empty or rl.iloc[0] != target_regime:
-                continue
-            y_prev = series.loc[:idx].dropna()
-            y_prev = float(y_prev.iloc[-2]) if len(y_prev) >= 2 else mu
-            pred   = mu + rho * (y_prev - mu)
-            actual = float(test.loc[idx])
-            if np.isfinite(actual) and np.isfinite(pred):
-                rows.append(dict(date=idx, actual=actual, pred=pred, year=yr))
-    if not rows:
-        return np.nan
-    bt = pd.DataFrame(rows)
-    return float(np.sqrt(((bt["actual"] - bt["pred"])**2).mean()))
-
 
 def regime_model_combine(df, factors, target, models, start_year=2015,
                           end_year=None, regime_methods=None, min_regime_train=30):
@@ -867,12 +839,6 @@ def main():
         uncorr = greedy_uncorrelated_subset(full_corr, bt_dict, rho_threshold=0.5,
                                              ar1_rmse=ar1_r)
         print(f"\n  Greedy uncorrelated subset (|ρ|<0.5): {uncorr}")
-
-    # ── LEAKAGE PROBE (on raw df, shows the un-lagged leakage) ──────────────
-    if "uk_rents" in live_facs:
-        fast_models = [m for m in models if m.name in ("UCM", "TVP", "DFM")]
-        probe_leakage(df_raw, "uk_rents", target, live_facs, fast_models,
-                      start_year=args.start)
 
     # ── REGIMES TABLE ───────────────────────────────────────────────────────
     print("\n" + "═"*70)

@@ -75,7 +75,8 @@ def _prep(df, factors, target):
 
 def _zscore(df, cols, ref=None):
     ref = df if ref is None else ref
-    mu, sd = ref[cols].mean(), ref[cols].std().replace(0, 1.0)
+    mu  = ref[cols].mean()
+    sd  = ref[cols].std().replace(0, 1.0).fillna(1.0)  # NaN std (all-NaN col) → 1
     return (df[cols] - mu) / sd, mu, sd
 
 
@@ -245,6 +246,7 @@ class DFM(BaseModel):
     def _fit_predict_year(self, train, test, factors, target):
         from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
         obs = factors + [target]
+        target_col = obs.index(target)   # positional index — robust to numeric column names
         z_tr, mu, sd = _zscore(train, obs)
         res = DynamicFactor(z_tr.dropna(), k_factors=self.k, factor_order=1,
                             error_order=1).fit(maxiter=200, disp=False)
@@ -252,8 +254,8 @@ class DFM(BaseModel):
         z_te = (test[obs] - train[obs].mean()) / train[obs].std().replace(0, 1)
         preds, cur = [], res
         for idx in test.index:
-            fc = cur.forecast(steps=1)
-            val = fc[target].values[0] if hasattr(fc, "columns") else np.asarray(fc)[0]
+            fc_arr = np.asarray(cur.forecast(steps=1))
+            val = fc_arr[0, target_col] if fc_arr.ndim == 2 else fc_arr[target_col]
             preds.append(val * sd[target] + mu[target])
             try:
                 cur = cur.append(z_te.loc[[idx]].values, refit=False)
@@ -284,12 +286,13 @@ class DFM(BaseModel):
             cutoff = d.index[-1] - pd.DateOffset(months=self.WINDOW - 1)
             d = d[d.index >= cutoff]
         obs = factors + [target]
+        target_col = obs.index(target)
         z, mu, sd = _zscore(d, obs)
         try:
             res = DynamicFactor(z.dropna(), k_factors=self.k, factor_order=1,
                                 error_order=1).fit(maxiter=200, disp=False)
-            fc = res.forecast(steps=1)
-            val = fc[target].values[0] if hasattr(fc, "columns") else np.asarray(fc)[0]
+            fc_arr = np.asarray(res.forecast(steps=1))
+            val = fc_arr[0, target_col] if fc_arr.ndim == 2 else fc_arr[target_col]
             return float(val * sd[target] + mu[target]), nowcast_date
         except Exception:
             return np.nan, nowcast_date
@@ -307,9 +310,10 @@ class RAMM_LGBM(BaseModel):
     MOM = "cpi_3m_chg"
 
     MONO = {"oil_brent": 1, "gbpusd": -1, "uk_be5": 1,
-            "uk_rents": 1, "uk_paye": 1, "uk_ashe_pay": 1,
-            "uk_infl_swap_1y": 1, "gas_hh": 1, "gas_eu": 1,
-            "cpi_lag1": 1, "cpi_3m_chg": 1}
+            "uk_rents_lag1": 1,   # rents (lag-1, real-time safe): higher → higher CPI
+            "uk_awg": 1,          # wage growth: higher wages → services CPI up
+            "uk_ashe_pay": 1, "uk_infl_swap_1y": 1,
+            "gas_eu": 1, "cpi_lag1": 1, "cpi_3m_chg": 1}
 
     def _feats(self, factors):
         return factors + [self.LAG, self.MOM]
@@ -473,9 +477,16 @@ class TVP(BaseModel):
         X = self._design(dd, factors, target)
         y = dd[target].values
         ok = np.isfinite(X).all(1) & np.isfinite(y)
-        # tune R/Q from train residual variance
+        # tune R from AR(1) residual variance on training data (forecast-error scale)
         ytr = train[target].values
-        R = np.nanvar(np.diff(ytr)) + 1e-6
+        ytr_ok = ytr[np.isfinite(ytr)]
+        if len(ytr_ok) > 2:
+            ar1_resid = ytr_ok[1:] - (ytr_ok[:-1].mean() +
+                        np.corrcoef(ytr_ok[:-1], ytr_ok[1:])[0, 1] *
+                        (ytr_ok[:-1] - ytr_ok[:-1].mean()))
+            R = float(np.var(ar1_resid)) + 1e-6
+        else:
+            R = 1.0
         Q = np.eye(X.shape[1]) * R * self.delta
         preds, _ = self._kalman(X[ok], y[ok], R, Q)
         full = pd.Series(np.nan, index=dd.index)
@@ -489,7 +500,14 @@ class TVP(BaseModel):
         X = self._design(dd, factors, target)
         y = dd[target].values
         ok = np.isfinite(X).all(1) & np.isfinite(y)
-        R = np.nanvar(np.diff(d[target].values)) + 1e-6
+        yraw = d[target].values[np.isfinite(d[target].values)]
+        if len(yraw) > 2:
+            ar1_resid = yraw[1:] - (yraw[:-1].mean() +
+                        np.corrcoef(yraw[:-1], yraw[1:])[0, 1] *
+                        (yraw[:-1] - yraw[:-1].mean()))
+            R = float(np.var(ar1_resid)) + 1e-6
+        else:
+            R = 1.0
         Q = np.eye(X.shape[1]) * R * self.delta
         _, betas = self._kalman(X[ok], y[ok], R, Q)
         Xok = X[ok]
@@ -521,7 +539,14 @@ class TVP(BaseModel):
             X = self._design(dd, factors, target)
             y = dd[target].values
             ok = np.isfinite(X).all(1) & np.isfinite(y)
-            R = np.nanvar(np.diff(y[ok])) + 1e-6
+            yok = y[ok]
+            if len(yok) > 2:
+                ar1_resid = yok[1:] - (yok[:-1].mean() +
+                            np.corrcoef(yok[:-1], yok[1:])[0, 1] *
+                            (yok[:-1] - yok[:-1].mean()))
+                R = float(np.var(ar1_resid)) + 1e-6
+            else:
+                R = 1.0
             Q = np.eye(X.shape[1]) * R * self.delta
             _, betas = self._kalman(X[ok], y[ok], R, Q)
             final_beta = betas[-1]
@@ -699,12 +724,14 @@ class MS_DFM(BaseModel):
         from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
         d = _prep(df, factors, target)
         try:
-            obs = factors + [target]
-            z, _, _ = _zscore(d, obs)
-            z = z.dropna()
-            dfm = self._dfm_fit(z)
+            # Use factors-only DFM (same as _fit_predict_year) for consistency
+            mu, sd = d[factors].mean(), d[factors].std().replace(0, 1)
+            z_fac = ((d[factors] - mu) / sd).dropna()
+            dfm = self._dfm_fit(z_fac)
             f = np.asarray(dfm.filtered_state[0])
-            ms = MarkovRegression(z[target].values, k_regimes=self.k, trend="c",
+            cpi_mu, cpi_sd = d[target].mean(), d[target].std() or 1.0
+            y_z = (d[target].reindex(z_fac.index).values - cpi_mu) / cpi_sd
+            ms = MarkovRegression(y_z, k_regimes=self.k, trend="c",
                                   exog=f, switching_variance=True).fit()
             sm = np.asarray(ms.smoothed_marginal_probabilities)
             sm = sm if sm.shape[1] == self.k else sm.T
@@ -713,7 +740,7 @@ class MS_DFM(BaseModel):
             var0, var1 = nm.get("sigma2[0]", 0.0), nm.get("sigma2[1]", 0.0)
             hi = 1 if var1 > var0 else 0
             labels = pd.Series(["high-vol" if s == hi else "low-vol" for s in state],
-                               index=z.index)
+                               index=z_fac.index)
             return labels, {"type": f"MS-DFM {self.k}-state (factor-augmented)",
                             "n_regimes": self.k, "current": labels.iloc[-1]}
         except Exception as e:
@@ -903,86 +930,6 @@ class BVAR(BaseModel):
                      [f"{c}_L{l}" for l in range(1, self.p + 1)
                       for c in ([target] + factors)])
         Xdf = pd.DataFrame(X[ok], columns=col_names[:X.shape[1]])
-        y_ok = y[ok]
-        base_rmse = np.sqrt(np.mean((y_ok - Xdf.values @ B)**2))
-        rng = np.random.default_rng(42)
-        agg = {}
-        for f in factors:
-            fac_cols = [c for c in Xdf.columns if c.startswith(f + "_")]
-            if not fac_cols:
-                continue
-            rises = []
-            for _ in range(5):
-                Xp = Xdf.copy()
-                for c in fac_cols:
-                    Xp[c] = rng.permutation(Xp[c].values)
-                rises.append(max(np.sqrt(np.mean((y_ok - Xp.values @ B)**2)) - base_rmse, 0))
-            agg[f] = float(np.mean(rises))
-        return pd.Series(agg).sort_values(ascending=False), self.importance_type
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. MIDAS — Almon polynomial distributed-lag model
-# ─────────────────────────────────────────────────────────────────────────────
-
-class MIDAS_Almon(BaseModel):
-    """
-    MIDAS with Almon (Gamma-polynomial) restricted distributed lags.
-    Each factor contributes K lags compressed through a degree-d polynomial;
-    reduces params from K·|factors| to (d+1)·|factors| while capturing
-    humped/decaying lag weight profiles.
-    """
-    name = "MIDAS-Almon"
-    importance_type = "permutation ΔRMSE"
-
-    def __init__(self, K=6, degree=2):
-        self.K = K
-        self.degree = degree
-
-    def _almon_basis(self, s, K, degree):
-        """Almon basis: columns are sum_k k^d * s_{t-k} for d=0..degree."""
-        cols = {}
-        for d in range(degree + 1):
-            cols[d] = sum((k**d) * s.shift(k) for k in range(1, K + 1))
-        return pd.DataFrame(cols)
-
-    def _build_X(self, df, factors):
-        parts = []
-        for fac in factors:
-            basis = self._almon_basis(df[fac], self.K, self.degree)
-            basis.columns = [f"{fac}_A{d}" for d in range(self.degree + 1)]
-            parts.append(basis)
-        return pd.concat(parts, axis=1) if parts else pd.DataFrame(index=df.index)
-
-    def _fit_predict_year(self, train, test, factors, target):
-        d = pd.concat([train, test])
-        mu = train[factors].mean(); sd = train[factors].std().replace(0, 1)
-        dz = d.copy(); dz[factors] = (d[factors] - mu) / sd
-        X_all = self._build_X(dz, factors)
-        X_tr = X_all.loc[train.index]; y_tr = train[target].values
-        ok_tr = np.isfinite(X_tr).all(1) & np.isfinite(y_tr)
-        lam = 1e-4 * ok_tr.sum()
-        Xo = X_tr[ok_tr].values
-        B = np.linalg.solve(Xo.T @ Xo + lam * np.eye(Xo.shape[1]), Xo.T @ y_tr[ok_tr])
-        X_te = X_all.loc[test.index]
-        ok_te = np.isfinite(X_te).all(1)
-        preds = np.full(len(test), np.nan)
-        preds[ok_te] = X_te[ok_te].values @ B
-        # fill any NaN from short history with train mean
-        preds = np.where(np.isnan(preds), train[target].mean(), preds)
-        return preds
-
-    def importance(self, df, factors, target):
-        d = _prep(df, factors, target)
-        mu = d[factors].mean(); sd = d[factors].std().replace(0, 1)
-        dz = d.copy(); dz[factors] = (d[factors] - mu) / sd
-        X = self._build_X(dz, factors)
-        y = d[target].values
-        ok = np.isfinite(X).all(1) & np.isfinite(y)
-        lam = 1e-4 * ok.sum()
-        Xo = X[ok].values
-        B = np.linalg.solve(Xo.T @ Xo + lam * np.eye(Xo.shape[1]), Xo.T @ y[ok])
-        Xdf = pd.DataFrame(Xo, columns=X.columns)
         y_ok = y[ok]
         base_rmse = np.sqrt(np.mean((y_ok - Xdf.values @ B)**2))
         rng = np.random.default_rng(42)
@@ -1345,7 +1292,7 @@ class CopulaReg(BaseModel):
         n = len(ref)
         ref_s = np.sort(ref)
         r = np.searchsorted(ref_s, vals) + 0.5
-        r = np.clip(r, 0.01, n + 0.99)
+        r = np.clip(r, 0.5, n + 0.5)   # keep within [1/(n+1), n/(n+1)] after division
         return norm.ppf(r / (n + 1))
 
     def _fit_predict_year(self, train, test, factors, target):
@@ -1619,7 +1566,8 @@ class SARIMAX_Model(BaseModel):
         exog_tr = train.loc[y_tr.index, fac_list].ffill().fillna(0)
         exog_te = test[fac_list].ffill().fillna(0)
 
-        # Try SARIMAX(1,0,1)(0,1,1,12); fall back to (1,0,1)
+        # Select best order on training data
+        best_fit, best_bic = None, np.inf
         for order, sorder in [((1,0,1),(0,1,1,12)), ((1,0,1),(0,0,0,0)), ((2,0,0),(0,0,0,0))]:
             try:
                 fit = sm.tsa.SARIMAX(
@@ -1627,11 +1575,35 @@ class SARIMAX_Model(BaseModel):
                     order=order, seasonal_order=sorder,
                     enforce_stationarity=False, enforce_invertibility=False
                 ).fit(disp=False, maxiter=200)
-                fc = fit.forecast(steps=len(test), exog=exog_te)
-                return fc.values if hasattr(fc, "values") else np.array(fc)
+                if fit.bic < best_bic:
+                    best_bic = fit.bic
+                    best_fit = fit
             except Exception:
                 continue
-        return np.full(len(test), np.nan)
+
+        if best_fit is None:
+            return np.full(len(test), np.nan)
+
+        # 1-step-ahead loop: re-filter with fixed params, append realized obs each month
+        preds = []
+        hist_y = list(y_tr.values)
+        hist_ex = list(exog_tr.values)
+        for i, idx in enumerate(test.index):
+            try:
+                ex_new = exog_te.iloc[[i]].values
+                cur = sm.tsa.SARIMAX(
+                    np.array(hist_y), exog=np.array(hist_ex),
+                    order=best_fit.model.order,
+                    seasonal_order=best_fit.model.seasonal_order,
+                    enforce_stationarity=False, enforce_invertibility=False
+                ).filter(best_fit.params)
+                fc = cur.forecast(steps=1, exog=ex_new)
+                preds.append(float(np.asarray(fc)[0]))
+            except Exception:
+                preds.append(float(np.mean(hist_y[-12:])) if len(hist_y) >= 12 else float(np.mean(hist_y)))
+            hist_y.append(float(test.loc[idx, target]))
+            hist_ex.append(exog_te.iloc[i].values.tolist())
+        return np.array(preds)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1670,12 +1642,26 @@ class VAR_Model(BaseModel):
             model = VAR(data)
             best_lag = min(self.MAX_LAGS, len(data) // 10)
             fit = model.fit(best_lag)
-            # Forecast one year ahead, extract CPI column
-            last_vals = data.values[-fit.k_ar:]
-            fc = fit.forecast(last_vals, steps=len(test))
-            return fc[:, 0]  # CPI is column 0
+            k_ar = fit.k_ar
         except Exception:
             return np.full(len(test), np.nan)
+
+        # 1-step-ahead loop: append realized row each month, re-forecast with fixed params
+        preds = []
+        hist = data.copy()
+        for idx in test.index:
+            try:
+                last_vals = hist.values[-k_ar:]
+                fc = fit.forecast(last_vals, steps=1)
+                preds.append(float(fc[0, 0]))  # CPI is column 0
+            except Exception:
+                preds.append(float(hist[target].iloc[-1]))
+            # append realized test row (target + VAR factors)
+            new_row = pd.DataFrame(
+                [[float(test.loc[idx, c]) for c in cols]], columns=cols,
+                index=[idx])
+            hist = pd.concat([hist, new_row])
+        return np.array(preds)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1702,6 +1688,7 @@ class AutoARIMA(BaseModel):
             return np.full(len(test), np.nan)
 
         best_bic, best_fit = np.inf, None
+        best_order = (1, 0, 0)
         for p in range(1, 4):
             for q in range(0, 3):
                 try:
@@ -1709,15 +1696,26 @@ class AutoARIMA(BaseModel):
                     if fit.bic < best_bic:
                         best_bic = fit.bic
                         best_fit = fit
+                        best_order = (p, 0, q)
                 except Exception:
                     pass
 
         if best_fit is None:
             return np.full(len(test), np.nan)
 
-        # Predict all test steps at once (rolling forecast(1) loop advances internal state)
-        fc = best_fit.predict(start=len(y_tr), end=len(y_tr) + len(test) - 1)
-        return fc.values if hasattr(fc, "values") else np.array(fc)
+        # 1-step-ahead loop: append realized obs each month to keep forecasts causal
+        preds = []
+        hist = list(y_tr.values)
+        for idx in test.index:
+            try:
+                cur = sm.tsa.ARIMA(np.array(hist), order=best_order).fit(
+                    method="statespace", disp=False)
+                fc = cur.forecast(steps=1)
+                preds.append(float(np.asarray(fc)[0]))
+            except Exception:
+                preds.append(float(np.mean(hist[-12:])) if len(hist) >= 12 else float(np.mean(hist)))
+            hist.append(float(test.loc[idx, target]))
+        return np.array(preds)
 
 
 class DFM2(DFM):
@@ -1763,11 +1761,15 @@ def score_backtest(bt, name="model"):
                     error_var=np.nan, mape=np.nan, bias=np.nan, n=0)
     e = bt["actual"] - bt["pred"]
     abs_pct = np.abs(e / bt["actual"].replace(0, np.nan)) * 100
+    # Directional accuracy: did we correctly predict month-over-month direction of change?
+    actual_chg = bt["actual"].diff()
+    pred_chg   = (bt["pred"] - bt["actual"].shift(1))
+    dir_mask   = (np.sign(actual_chg) == np.sign(pred_chg)).dropna()
     return dict(
         model     = name,
         rmse      = float(np.sqrt((e**2).mean())),
         mae       = float(e.abs().mean()),
-        dir_acc   = float((np.sign(bt["actual"]) == np.sign(bt["pred"])).mean() * 100),
+        dir_acc   = float(dir_mask.mean() * 100) if len(dir_mask) else np.nan,
         error_var = float(e.var()),
         mape      = float(abs_pct.mean()),
         bias      = float(e.mean()),
@@ -1781,7 +1783,7 @@ def score_backtest(bt, name="model"):
 
 def all_models():
     return [DFM(), RAMM_LGBM(), UCM(), TVP(), HMM(), MS_DFM(),
-            BVAR(), HiddenRF(), GBM(), MIDAS(), BridgeEq(), CopulaReg(),
+            LSTAR(), BVAR(), HiddenRF(), GBM(), MIDAS(), BridgeEq(), CopulaReg(),
             DFM2(), ElasticNet(), MedianElasticNet(),
             HuberNet(), PCR(), RegimeEnsemble(),
             SARIMAX_Model(), VAR_Model(), AutoARIMA()]
