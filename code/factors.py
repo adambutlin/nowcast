@@ -41,6 +41,14 @@ import requests
 
 warnings.filterwarnings("ignore")
 
+# macOS Python ships without system CA certs; point requests/urllib at certifi bundle.
+try:
+    import certifi as _certifi
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", _certifi.where())
+    os.environ.setdefault("SSL_CERT_FILE",      _certifi.where())
+except ImportError:
+    pass
+
 DATA_DIR    = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 FRED_KEY    = os.getenv("FRED_API_KEY")
 BOE_BASE    = "https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/"

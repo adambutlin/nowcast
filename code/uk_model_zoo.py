@@ -1823,8 +1823,16 @@ def score_backtest(bt, name="model"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def all_models():
-    return [DFM(), RAMM_LGBM(), UCM(), TVP(), HMM(), MS_DFM(),
-            LSTAR(), BVAR(), HiddenRF(), GBM(), MIDAS(), BridgeEq(), CopulaReg(),
-            DFM2(), ElasticNet(), MedianElasticNet(),
-            HuberNet(), PCR(), RegimeEnsemble(),
-            SARIMAX_Model(), VAR_Model(), AutoARIMA()]
+    """Operational model zoo: RMSE <= 1.5x AR(1) in 2015-2024 backtest (corrected, 2026-06-07)."""
+    return [
+        DFM(), DFM2(), UCM(), TVP(), BVAR(),
+        MIDAS(), BridgeEq(),
+        ElasticNet(), MedianElasticNet(), HuberNet(), PCR(),
+        RegimeEnsemble(), SARIMAX_Model(), AutoARIMA(),
+    ]
+
+
+def experimental_models():
+    """Models with RMSE > 1.5x AR(1) in 2015-2024 backtest. Excluded from ensembles.
+    Retained for research; may improve with different factor sets or hyperparameters."""
+    return [RAMM_LGBM(), HMM(), MS_DFM(), LSTAR(), HiddenRF(), GBM(), CopulaReg(), VAR_Model()]

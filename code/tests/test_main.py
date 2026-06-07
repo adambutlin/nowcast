@@ -75,16 +75,21 @@ class TestRollingWindow(unittest.TestCase):
 class TestAllModels(unittest.TestCase):
     def test_all_models_count(self):
         models = Z.all_models()
-        self.assertEqual(len(models), 22)  # 21 base + LSTAR
+        self.assertEqual(len(models), 14)  # 8 dead models moved to experimental_models()
+
+    def test_experimental_models_exist(self):
+        exp = Z.experimental_models()
+        self.assertEqual(len(exp), 8)
+        names = {m.name for m in exp}
+        self.assertIn("RAMM-LGBM", names)
+        self.assertIn("HMM", names)
 
     def test_windowed_models(self):
         models = Z.all_models()
         windowed = {m.name: m.WINDOW for m in models if m.WINDOW is not None}
-        # LSTAR uses 60-month rolling window to avoid divergence on long series
-        self.assertEqual(windowed.get("LSTAR"), 60)
+        # No rolling-window models remain in all_models() after LSTAR moved to experimental
         for name, w in windowed.items():
-            if name != "LSTAR":
-                self.fail(f"Unexpected WINDOW on {name}={w}")
+            self.fail(f"Unexpected WINDOW on {name}={w}")
 
     def test_all_model_names_unique(self):
         models = Z.all_models()
