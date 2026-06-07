@@ -785,3 +785,108 @@ FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore code/ma
 4. Core CPI project not yet started (user requested `--target cpi_core_yoy` as next step)
 
 ---
+---
+
+## Handoff: 2026-06-07T08:21:34Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: auto
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/65b6c120-cad7-4be6-9a13-fac8a165c303.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+(unavailable)
+
+### Git Snapshot
+- Branch: main
+- Status:
+ M code/factors.py
+ M docs/handoff/HANDOFF.md
+?? ".venv 2"
+- Recent commits:
+498e957 fix: patch 7 bugs identified in quant evaluation
+5f7c8e6 chore: delete stale nowcast_plot.py (superseded by plot_nowcast_history.py)
+19c28e2 docs: fill HANDOFF.md 2026-06-07T07:49Z entry with session summary
+7e67067 refactor: rename nowcast_cpi→main, move tests to tests/, delete dead scripts
+0a5a617 refactor: reorganize repo — move code to code/, docs to docs/, remove obsolete files
+
+### Model Summary
+- Duplicate auto-save entry (see 08:21:35Z entry below for full content)
+- State at this snapshot: 7 bugs patched in commit 498e957; design patches not yet applied; factors.py had cpi_3m_chg partially drafted
+
+### Handoff Context (paste into next session)
+See 08:21:35Z entry below — that is the canonical handoff for this session.
+
+---
+---
+
+## Handoff: 2026-06-07T08:21:35Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: auto
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/65b6c120-cad7-4be6-9a13-fac8a165c303.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+(unavailable)
+
+### Git Snapshot
+- Branch: main
+- Status:
+ M code/factors.py
+ M docs/handoff/HANDOFF.md
+?? ".venv 2"
+- Recent commits:
+498e957 fix: patch 7 bugs identified in quant evaluation
+5f7c8e6 chore: delete stale nowcast_plot.py (superseded by plot_nowcast_history.py)
+19c28e2 docs: fill HANDOFF.md 2026-06-07T07:49Z entry with session summary
+7e67067 refactor: rename nowcast_cpi→main, move tests to tests/, delete dead scripts
+0a5a617 refactor: reorganize repo — move code to code/, docs to docs/, remove obsolete files
+
+### Model Summary
+- Session continued from compaction mid-task; picked up Patch 1 (cpi_3m_chg design fix) immediately
+- 10 design patches applied across factors.py, uk_model_zoo.py, main.py using 3 parallel subagents + 1 peer review agent
+- **cpi_3m_chg**: added to REGISTRY (candidate=True, pub_lag=0, fetch=None); computed in main.py after apply_publication_lags and appended to live_facs so it enters SHAP screening
+- **Feats dedup**: all `_feats()` methods and inline feats assignments now guard `[f for f in [LAG, MOM] if f not in factors]` to prevent duplicate columns when cpi_3m_chg is in factors
+- **Superstar selection bias**: spa_prelim computed on bt_dict_sel (first half of OOS period); full-period spa for reporting unchanged
+- **RMC recursive labels**: `_regime_labels_hmm_recursive()` uses MarkovRegression.filter() (fixed params, no refit); peer review caught 3 bugs — lookahead via refit, wrong boolean mask length, DataFrame argmax on filtered probs
+- **GW test**: Giacomini-White conditional predictability test added; gw_stat/gw_p columns in mdf computed vs AR(1) for every model
+- **Subsample RMSE**: `subsample_rmse()` breaks OOS RMSE into 2015-19, 2020-21, 2022-23, 2024+ sub-periods; printed after main metrics table
+- **Uncertainty bands**: nowcast_lo/nowcast_hi = nowcast ± model RMSE added to nowcast output DataFrame
+- **Student-t copula**: CopulaReg now uses scipy.stats.t with df_est from training set size instead of Gaussian
+- **Warning count**: n_warns column in backtest output via warnings.catch_warnings wrapping each _fit_predict_year fold
+- **factors.py housekeeping**: _gbp_eur() helper eliminates triple DEXUSUK call; uk_paye fetch=None (KAB9 is uk_awg not payroll)
+- Commit: f87c5b1 "feat: 10 design fixes"; 15/15 tests pass throughout
+
+### Handoff Context (paste into next session)
+Session complete. Commit f87c5b1 on branch main. 15/15 tests pass.
+
+**Remaining known design goals (not implemented):**
+- Patch 11 (initial vs revised backtests): requires ALFRED vintage DB + ONS real-time API — not implementable without those data sources
+
+**To run full backtest (requires FRED_API_KEY):**
+```bash
+cd /Users/Adam/Documents/home/quant/nowcast/code
+FRED_API_KEY=<key> ../.venv/bin/python -W ignore main.py --start 2015 --train-from 1992 --shap-screen 2>&1 | tee ../run.log
+```
+
+**To run with RMC recursive regime labels:**
+```bash
+FRED_API_KEY=<key> ../.venv/bin/python -W ignore main.py --start 2015 --train-from 1992 --shap-screen --rmc 2>&1 | tee ../run_rmc.log
+```
+
+**Key files:**
+- `code/factors.py`: REGISTRY with cpi_3m_chg, _gbp_eur(), uk_paye=None, screen_candidates()
+- `code/uk_model_zoo.py`: 22-model zoo, Student-t copula in CopulaReg, n_warns in backtest(), feats dedup in all models
+- `code/main.py`: cpi_3m_chg computation, superstar bias fix, _regime_labels_hmm_recursive(), gw_test(), subsample_rmse(), uncertainty bands
+- `code/tests/test_main.py` + `code/tests/conftest.py`: 15 tests
+
+---
