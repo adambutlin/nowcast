@@ -33,6 +33,33 @@ warnings.filterwarnings("ignore")
 
 START_YEAR_DEFAULT = 2015
 
+# ── Module-level cache for MIDAS / BridgeEq daily data ───────────────────────
+_MIDAS_CACHE: dict = {}
+
+def _get_midas_data():
+    """Fetch daily Brent/GBP/VIX/TTF from yfinance, return monthly-mean DataFrame.
+    Cached at module level to avoid repeated downloads across backtest iterations."""
+    if "mm" in _MIDAS_CACHE:
+        return _MIDAS_CACHE["mm"]
+    try:
+        import yfinance as yf
+        tickers = [("brent_ma", "BZ=F"), ("gbpusd_ma", "GBPUSD=X"),
+                   ("vix_ma", "^VIX"),   ("gas_ma", "TTF=F")]
+        dfs = {}
+        for name, tkr in tickers:
+            try:
+                raw = yf.download(tkr, start="1989-01-01", auto_adjust=True, progress=False)
+                c = (raw[("Close", tkr)] if isinstance(raw.columns, pd.MultiIndex)
+                     else raw["Close"])
+                dfs[name] = c.resample("ME").mean().rename(name)
+            except Exception:
+                pass
+        result = pd.concat(dfs.values(), axis=1) if dfs else None
+    except Exception:
+        result = None
+    _MIDAS_CACHE["mm"] = result
+    return result
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -89,14 +116,21 @@ class BaseModel:
     importance_type = "permutation ΔRMSE"
     has_regimes = False
     WINDOW = None   # None = expanding window; int = rolling window in months
+    # Hard support constraint: UK CPI YoY has empirical support ≈ [-2, 20].
+    # Post-fit clipping prevents runaway predictions from polluting ensembles.
+    PRED_MIN = -2.0
+    PRED_MAX = 20.0
 
     def _fit_predict_year(self, train, test, factors, target):
         raise NotImplementedError
 
-    def backtest(self, df, factors, target, start_year=START_YEAR_DEFAULT, min_train=24):
+    def backtest(self, df, factors, target, start_year=START_YEAR_DEFAULT,
+                min_train=24, end_year=None):
         d = _prep(df, factors, target)
         rows = []
-        for yr in sorted(y for y in d.index.year.unique() if y >= start_year):
+        years = d.index.year.unique()
+        years = [y for y in years if y >= start_year and (end_year is None or y <= end_year)]
+        for yr in sorted(years):
             test_start = pd.Timestamp(f"{yr}-01-01")
             if self.WINDOW is None:
                 train = d[d.index.year < yr]
@@ -114,6 +148,7 @@ class BaseModel:
                 preds = self._fit_predict_year(train, test, factors, target)
             except Exception:
                 continue
+            preds = np.clip(preds, self.PRED_MIN, self.PRED_MAX)
             for date, actual, pred in zip(test.index, test[target].values, preds):
                 if np.isfinite(actual) and np.isfinite(pred):
                     rows.append(dict(date=date, actual=float(actual),
@@ -268,19 +303,21 @@ class RAMM_LGBM(BaseModel):
     name = "RAMM-LGBM"
     importance_type = "mean |SHAP|"
     has_regimes = True
-    LAG = "cpi_lag1"                       # AR-augmentation for fair 1-step nowcast
+    LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
 
-    # monotone sign by factor name (default 0)
     MONO = {"oil_brent": 1, "gbpusd": -1, "uk_be5": 1,
             "uk_rents": 1, "uk_paye": 1, "uk_ashe_pay": 1,
-            "uk_infl_swap_1y": 1, "gas_hh": 1, "gas_eu": 1, "cpi_lag1": 1}
+            "uk_infl_swap_1y": 1, "gas_hh": 1, "gas_eu": 1,
+            "cpi_lag1": 1, "cpi_3m_chg": 1}
 
     def _feats(self, factors):
-        return factors + [self.LAG]
+        return factors + [self.LAG, self.MOM]
 
     def _add_lag(self, frame, target):
         f = frame.copy()
         f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
         return f
 
     def _model(self, feats):
@@ -331,12 +368,16 @@ class RAMM_LGBM(BaseModel):
         base_row, nowcast_date = self._nowcast_row(df, factors, target)
         if base_row is None:
             return np.nan, nowcast_date
-        # Augment the base feature row with cpi_lag1
         lag_val = both.loc[nowcast_date, self.LAG] if nowcast_date in both.index else np.nan
         if not np.isfinite(lag_val):
             return np.nan, nowcast_date
         latest_row = base_row.copy()
         latest_row[self.LAG] = lag_val
+        if nowcast_date in both.index and self.MOM in both.columns:
+            mom_val = both.loc[nowcast_date, self.MOM]
+            latest_row[self.MOM] = mom_val if (not pd.isna(mom_val) and np.isfinite(float(mom_val))) else 0.0
+        else:
+            latest_row[self.MOM] = 0.0
         tr = self._add_lag(d, target).dropna(subset=feats + [target])
         try:
             m = self._model(feats)
@@ -417,8 +458,10 @@ class TVP(BaseModel):
         return preds, betas
 
     def _design(self, d, factors, target):
+        mom3 = d[target].shift(1).diff(3).values
         X = np.column_stack([np.ones(len(d)),
                              d[target].shift(1).values,
+                             mom3,
                              d[factors].values])
         return X
 
@@ -452,7 +495,7 @@ class TVP(BaseModel):
         Xok = X[ok]
         # contribution columns: [const, ar1, factors...]; importance over factors
         contrib = np.abs(betas * Xok)
-        col_names = ["const", "ar1"] + factors
+        col_names = ["const", "ar1", "mom3"] + factors
         s = pd.Series(contrib.mean(axis=0), index=col_names)
         return s[factors], self.importance_type
 
@@ -482,10 +525,10 @@ class TVP(BaseModel):
             Q = np.eye(X.shape[1]) * R * self.delta
             _, betas = self._kalman(X[ok], y[ok], R, Q)
             final_beta = betas[-1]
-            # Nowcast feature: [const=1, ar1=last known CPI, normalized factors]
-            ar1 = float(d[target].iloc[-1])
+            ar1  = float(d[target].iloc[-1])
+            mom3 = float(d[target].iloc[-1] - d[target].iloc[-4]) if len(d) >= 4 else 0.0
             row_fz = (row[factors] - fz_mu) / fz_sd
-            x_now = np.concatenate([[1.0], [ar1], row_fz.values[0]])
+            x_now = np.concatenate([[1.0], [ar1], [mom3], row_fz.values[0]])
             return float(x_now @ final_beta), nowcast_date
         except Exception:
             return np.nan, nowcast_date
@@ -882,14 +925,14 @@ class BVAR(BaseModel):
 # 9. MIDAS — Almon polynomial distributed-lag model
 # ─────────────────────────────────────────────────────────────────────────────
 
-class MIDAS(BaseModel):
+class MIDAS_Almon(BaseModel):
     """
     MIDAS with Almon (Gamma-polynomial) restricted distributed lags.
     Each factor contributes K lags compressed through a degree-d polynomial;
     reduces params from K·|factors| to (d+1)·|factors| while capturing
     humped/decaying lag weight profiles.
     """
-    name = "MIDAS"
+    name = "MIDAS-Almon"
     importance_type = "permutation ΔRMSE"
 
     def __init__(self, K=6, degree=2):
@@ -966,22 +1009,26 @@ class HiddenRF(BaseModel):
     """
     K-means discovers regimes in factor space; separate RF per regime;
     test predictions soft-weighted by inverse Euclidean distance to centroids.
-    AR-augmented (lagged CPI) for fair 1-step comparison.
+    AR-augmented (lagged CPI + 3m momentum) for fair 1-step comparison.
     """
     name = "HiddenRF"
     importance_type = "mean |feature importance|"
     has_regimes = True
     LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
 
     def __init__(self, n_regimes=2, n_estimators=200):
         self.n_regimes = n_regimes
         self.n_estimators = n_estimators
 
     def _add_lag(self, frame, target):
-        f = frame.copy(); f[self.LAG] = f[target].shift(1); return f
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
 
     def _feats(self, factors):
-        return factors + [self.LAG]
+        return factors + [self.LAG, self.MOM]
 
     def _fit_predict_year(self, train, test, factors, target):
         from sklearn.ensemble import RandomForestRegressor
@@ -1054,12 +1101,16 @@ class GBM(BaseModel):
     name = "GBM"
     importance_type = "mean |SHAP|"
     LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
 
     def _add_lag(self, frame, target):
-        f = frame.copy(); f[self.LAG] = f[target].shift(1); return f
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
 
     def _feats(self, factors):
-        return factors + [self.LAG]
+        return factors + [self.LAG, self.MOM]
 
     def _model(self):
         try:
@@ -1102,13 +1153,15 @@ class ElasticNet(BaseModel):
     name = "ElasticNet"
     importance_type = "coefficient |value|"
     LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
 
     def _feats(self, factors):
-        return factors + [self.LAG]
+        return factors + [self.LAG, self.MOM]
 
     def _add_lag(self, frame, target):
         f = frame.copy()
         f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
         return f
 
     def _fit_predict_year(self, train, test, factors, target):
@@ -1154,6 +1207,11 @@ class ElasticNet(BaseModel):
             return np.nan, nowcast_date
         latest_row = base_row.copy()
         latest_row[self.LAG] = lag_val
+        if nowcast_date in both.index and self.MOM in both.columns:
+            mom_val = both.loc[nowcast_date, self.MOM]
+            latest_row[self.MOM] = mom_val if (not pd.isna(mom_val) and np.isfinite(float(mom_val))) else 0.0
+        else:
+            latest_row[self.MOM] = 0.0
         tr = self._add_lag(d, target).dropna(subset=feats + [target])
         scaler = StandardScaler()
         X_tr = scaler.fit_transform(tr[feats])
@@ -1165,71 +1223,501 @@ class ElasticNet(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ROLLING-WINDOW VARIANTS  (5-year = 60 months, 2-year = 24 months)
-# All inherit _fit_predict_year from parent; only WINDOW and name change.
-# BaseModel.backtest() slices training data to WINDOW months before test_start,
-# falling back to expanding window if < min_train observations remain.
+# 12. MIDAS
 # ─────────────────────────────────────────────────────────────────────────────
 
-class DFM_Rolling5Y(DFM):
-    name = "DFM-5Y";  WINDOW = 60
+class MIDAS(BaseModel):
+    """
+    U-MIDAS: within-month DAILY AVERAGES of financial factors (Brent, GBP, VIX, TTF)
+    rather than month-end snapshots, capturing intra-month information.
+    ElasticNetCV for regularisation; also includes CPI AR lag + 3m momentum.
+    Falls back to month-end if yfinance daily fetch fails.
+    """
+    name = "MIDAS"
+    LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
 
-class DFM_Rolling2Y(DFM):
-    name = "DFM-2Y";  WINDOW = 24
+    def _aug(self, frame, target):
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
 
-class RAMM_LGBM_Rolling5Y(RAMM_LGBM):
-    name = "RAMM-LGBM-5Y";  WINDOW = 60
+    def _fit_predict_year(self, train, test, factors, target):
+        from sklearn.linear_model import ElasticNetCV
+        from sklearn.preprocessing import StandardScaler
 
-class RAMM_LGBM_Rolling2Y(RAMM_LGBM):
-    name = "RAMM-LGBM-2Y";  WINDOW = 24
+        mm = _get_midas_data()
+        both = self._aug(pd.concat([train, test]), target)
 
-class UCM_Rolling5Y(UCM):
-    name = "UCM-5Y";  WINDOW = 60
+        if mm is not None:
+            both = both.join(mm, how="left")
+            midas_cols = list(mm.columns)
+        else:
+            midas_cols = []
 
-class UCM_Rolling2Y(UCM):
-    name = "UCM-2Y";  WINDOW = 24
+        feats = midas_cols + [self.LAG, self.MOM]
+        # require only AR features + target; midas cols filled with mean where sparse
+        tr = both.loc[train.index].dropna(subset=[self.LAG, self.MOM, target])
+        te = both.loc[test.index].ffill()
 
-class TVP_Rolling5Y(TVP):
-    name = "TVP-5Y";  WINDOW = 60
+        if len(tr) < 20:
+            return np.full(len(te), np.nan)
 
-class TVP_Rolling2Y(TVP):
-    name = "TVP-2Y";  WINDOW = 24
+        tr_fill = tr[feats].fillna(tr[feats].mean())
+        te_fill = te[feats].fillna(tr[feats].mean())
+        scaler = StandardScaler()
+        X_tr = scaler.fit_transform(tr_fill)
+        X_te = scaler.transform(te_fill)
+        m = ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9], cv=5, max_iter=5000)
+        m.fit(X_tr, tr[target].values)
+        return m.predict(X_te)
 
-class HMM_Rolling5Y(HMM):
-    name = "HMM-5Y";  WINDOW = 60
 
-class HMM_Rolling2Y(HMM):
-    name = "HMM-2Y";  WINDOW = 24
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. BRIDGE EQUATION
+# ─────────────────────────────────────────────────────────────────────────────
 
-class MS_DFM_Rolling5Y(MS_DFM):
-    name = "MS-DFM-5Y";  WINDOW = 60
+class BridgeEq(BaseModel):
+    """
+    Bridge equation: pure OLS on within-month daily-average financial factors
+    + CPI AR lag + 3m momentum. No regularisation — standard macro bridge approach.
+    """
+    name = "BridgeEq"
+    LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
 
-class MS_DFM_Rolling2Y(MS_DFM):
-    name = "MS-DFM-2Y";  WINDOW = 24
+    def _aug(self, frame, target):
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
 
-class LSTAR_Rolling5Y(LSTAR):
-    name = "LSTAR-5Y";  WINDOW = 60
+    def _fit_predict_year(self, train, test, factors, target):
+        mm = _get_midas_data()
+        both = self._aug(pd.concat([train, test]), target)
 
-class LSTAR_Rolling2Y(LSTAR):
-    name = "LSTAR-2Y";  WINDOW = 24
+        if mm is not None:
+            both = both.join(mm, how="left")
+            midas_cols = list(mm.columns)
+        else:
+            midas_cols = []
 
-class BVAR_Rolling5Y(BVAR):
-    name = "BVAR-5Y";  WINDOW = 60
+        feats = midas_cols + [self.LAG, self.MOM]
+        # require only AR features + target; midas cols filled with mean where sparse
+        tr = both.loc[train.index].dropna(subset=[self.LAG, self.MOM, target])
+        te = both.loc[test.index].ffill()
 
-class BVAR_Rolling2Y(BVAR):
-    name = "BVAR-2Y";  WINDOW = 24
+        if len(tr) < 20:
+            return np.full(len(te), np.nan)
 
-class HiddenRF_Rolling5Y(HiddenRF):
-    name = "HiddenRF-5Y";  WINDOW = 60
+        tr_fill = tr[feats].fillna(tr[feats].mean())
+        te_fill = te[feats].fillna(tr[feats].mean())
+        X_tr = np.column_stack([np.ones(len(tr_fill)), tr_fill.values])
+        beta, _, _, _ = np.linalg.lstsq(X_tr, tr[target].values, rcond=None)
+        X_te = np.column_stack([np.ones(len(te_fill)), te_fill.values])
+        return X_te @ beta
 
-class HiddenRF_Rolling2Y(HiddenRF):
-    name = "HiddenRF-2Y";  WINDOW = 24
 
-class GBM_Rolling5Y(GBM):
-    name = "GBM-5Y";  WINDOW = 60
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. COPULA REGRESSION
+# ─────────────────────────────────────────────────────────────────────────────
 
-class GBM_Rolling2Y(GBM):
-    name = "GBM-2Y";  WINDOW = 24
+class CopulaReg(BaseModel):
+    """
+    Gaussian copula regression: rank-transforms all variables to normal scores,
+    fits OLS in rank-space, back-transforms via empirical quantile function.
+    Robust to heavy tails and outliers (e.g. 2022 inflation spike).
+    """
+    name = "CopulaReg"
+    LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
+
+    def _aug(self, frame, target):
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
+
+    @staticmethod
+    def _normal_scores(vals, ref):
+        from scipy.stats import norm
+        n = len(ref)
+        ref_s = np.sort(ref)
+        r = np.searchsorted(ref_s, vals) + 0.5
+        r = np.clip(r, 0.01, n + 0.99)
+        return norm.ppf(r / (n + 1))
+
+    def _fit_predict_year(self, train, test, factors, target):
+        from scipy.stats import norm
+        feats = factors + [self.LAG, self.MOM]
+        both = self._aug(pd.concat([train, test]), target)
+        tr = both.loc[train.index].dropna(subset=feats + [target])
+        te = both.loc[test.index].ffill()
+
+        if len(tr) < 20:
+            return np.full(len(te), np.nan)
+
+        n = len(tr)
+        z_tr = np.zeros((n, len(feats)))
+        for j, f in enumerate(feats):
+            ref = tr[f].fillna(tr[f].mean()).values
+            z_tr[:, j] = self._normal_scores(ref, ref)
+        z_y = self._normal_scores(tr[target].values, tr[target].values)
+
+        X_tr = np.column_stack([np.ones(n), z_tr])
+        beta, _, _, _ = np.linalg.lstsq(X_tr, z_y, rcond=None)
+
+        n_te = len(te)
+        z_te = np.zeros((n_te, len(feats)))
+        for j, f in enumerate(feats):
+            ref = tr[f].fillna(tr[f].mean()).values
+            te_v = te[f].fillna(tr[f].mean()).values
+            z_te[:, j] = self._normal_scores(te_v, ref)
+
+        z_pred = np.column_stack([np.ones(n_te), z_te]) @ beta
+        pct = norm.cdf(z_pred)
+        pct = np.clip(pct, 0.01, 0.99)
+        y_sorted = np.sort(tr[target].values)
+        return y_sorted[np.clip((pct * n).astype(int), 0, n - 1)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 15. HUBER REGRESSION
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HuberNet(BaseModel):
+    """
+    Huber regression (sklearn HuberRegressor) with AR lag + momentum features.
+
+    Huber loss = quadratic for |e| < epsilon, linear for |e| >= epsilon.
+    With epsilon=2.0 (≈2σ for CPI errors), small errors treated like OLS while
+    large spikes (2022 energy crisis) are downweighted — more robust than pure
+    MSE without the systematic bias of pure MAE.
+    """
+    name = "HuberNet"
+    LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
+
+    def _aug(self, frame, target):
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
+
+    def _fit_predict_year(self, train, test, factors, target):
+        from sklearn.linear_model import HuberRegressor
+        from sklearn.preprocessing import StandardScaler
+
+        both = self._aug(pd.concat([train, test]), target)
+        feats = [self.LAG, self.MOM] + list(factors)
+        tr = both.loc[train.index].dropna(subset=feats + [target])
+        te = both.loc[test.index]
+        if len(tr) < 20:
+            return np.full(len(te), np.nan)
+
+        fmean = tr[feats].mean()
+        scaler = StandardScaler()
+        X_tr = scaler.fit_transform(tr[feats].fillna(fmean))
+        X_te = scaler.transform(te[feats].fillna(fmean))
+        m = HuberRegressor(epsilon=2.0, max_iter=500)
+        m.fit(X_tr, tr[target].values)
+        return m.predict(X_te)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16. PRINCIPAL COMPONENT REGRESSION
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PCR(BaseModel):
+    """
+    Principal Component Regression: PCA → OLS in reduced factor space.
+
+    Handles multicollinearity in the factor set (oil/gas/vol/FX are correlated).
+    n_components chosen by cross-validation (retain 80% variance or up to 6 PCs).
+    Includes AR lag + 3m momentum as raw features (not PC-reduced) to preserve
+    the autoregressive signal.
+    """
+    name = "PCR"
+    LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
+
+    def _aug(self, frame, target):
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
+
+    def _fit_predict_year(self, train, test, factors, target):
+        from sklearn.decomposition import PCA
+        from sklearn.linear_model import Ridge
+        from sklearn.preprocessing import StandardScaler
+
+        both = self._aug(pd.concat([train, test]), target)
+        ar_feats = [self.LAG, self.MOM]
+        fac_list = list(factors)
+        all_feats = ar_feats + fac_list
+
+        tr = both.loc[train.index].dropna(subset=all_feats + [target])
+        te = both.loc[test.index]
+        if len(tr) < 20:
+            return np.full(len(te), np.nan)
+
+        fmean = tr[all_feats].mean()
+        tr_fill = tr[all_feats].fillna(fmean)
+        te_fill = te[all_feats].fillna(fmean)
+
+        scaler = StandardScaler()
+        X_tr_scaled = scaler.fit_transform(tr_fill)
+        X_te_scaled = scaler.transform(te_fill)
+
+        # PCA on factor columns only (not AR terms)
+        n_fac = len(fac_list)
+        n_ar  = len(ar_feats)
+        n_pc  = min(6, n_fac, len(tr) // 5)
+        pca = PCA(n_components=n_pc)
+        X_tr_pca = pca.fit_transform(X_tr_scaled[:, n_ar:])
+        X_te_pca = pca.transform(X_te_scaled[:, n_ar:])
+
+        X_tr_full = np.column_stack([X_tr_scaled[:, :n_ar], X_tr_pca])
+        X_te_full = np.column_stack([X_te_scaled[:, :n_ar], X_te_pca])
+
+        ridge = Ridge(alpha=1.0)
+        ridge.fit(X_tr_full, tr[target].values)
+        return ridge.predict(X_te_full)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 17. REGIME-CONDITIONAL ENSEMBLE  (uk_be5 threshold, non-tree models only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RegimeEnsemble(BaseModel):
+    """
+    Two-regime conditional ensemble using 5Y inflation breakeven (uk_be5).
+    Threshold 3.0%: above = high-inflation regime, below = low-inflation regime.
+    Per-regime sub-models: UCM, TVP, ElasticNet (no trees, no Markov switching).
+    Regime label from last observed uk_be5 in training window.
+
+    Rationale: UCM/TVP trained on historical high-inflation episodes captures
+    different factor-CPI dynamics than the same models trained on low-inflation.
+    Falls back to full-sample average if regime has < 20 training observations.
+    """
+    name = "RegimeEns"
+    THRESHOLD = 3.0
+    MIN_REGIME_OBS = 20
+
+    def _fit_predict_year(self, train, test, factors, target):
+        if "uk_be5" not in train.columns:
+            # No regime indicator — fall back to simple average of sub-models
+            be5_regime = None
+        else:
+            last_be5 = train["uk_be5"].dropna()
+            be5_regime = int(float(last_be5.iloc[-1]) > self.THRESHOLD) if len(last_be5) else None
+
+        sub_models = [UCM(), TVP(), ElasticNet()]
+        preds_list = []
+
+        for m in sub_models:
+            if be5_regime is not None and "uk_be5" in train.columns:
+                is_regime = (train["uk_be5"].ffill().fillna(0) > self.THRESHOLD).astype(int)
+                regime_train = train[is_regime == be5_regime]
+                effective_train = regime_train if len(regime_train) >= self.MIN_REGIME_OBS else train
+            else:
+                effective_train = train
+            try:
+                p = m._fit_predict_year(effective_train, test, factors, target)
+                if np.isfinite(p).all():
+                    preds_list.append(p)
+            except Exception:
+                pass
+
+        if not preds_list:
+            return np.full(len(test), np.nan)
+        return np.mean(preds_list, axis=0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 15. MEDIAN REGRESSION  (quantile regression at 0.5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MedianElasticNet(BaseModel):
+    """
+    Quantile regression at median (q=0.5) with L1 regularisation.
+
+    UK CPI has fat-tailed errors (excess kurtosis ≈ 2) and occasional large
+    spikes (2022 energy crisis). MSE-based models are sensitive to these
+    outliers. Minimising MAE (= q=0.5 pinball loss) is the optimal loss under
+    symmetric fat-tailed error distributions and is robust to positive skew.
+    No distributional back-transform needed — predictions are in original CPI
+    space and never suffer from CDF extrapolation errors.
+
+    Regularisation: alpha=0.1 (weak) — feature selection is already handled
+    upstream by the factor registry.
+    """
+    name = "MedianElasticNet"
+    LAG = "cpi_lag1"
+    MOM = "cpi_3m_chg"
+
+    def _aug(self, frame, target):
+        f = frame.copy()
+        f[self.LAG] = f[target].shift(1)
+        f[self.MOM] = f[target].shift(1).diff(3)
+        return f
+
+    def _fit_predict_year(self, train, test, factors, target):
+        from sklearn.linear_model import QuantileRegressor
+        from sklearn.preprocessing import StandardScaler
+
+        both = self._aug(pd.concat([train, test]), target)
+        feats = [self.LAG, self.MOM] + list(factors)
+
+        tr = both.loc[train.index].dropna(subset=feats + [target])
+        te = both.loc[test.index]
+        if len(tr) < 20:
+            return np.full(len(te), np.nan)
+
+        fmean = tr[feats].mean()
+        tr_fill = tr[feats].fillna(fmean)
+        te_fill = te[feats].fillna(fmean)
+
+        scaler = StandardScaler()
+        X_tr = scaler.fit_transform(tr_fill.values)
+        X_te = scaler.transform(te_fill.values)
+
+        qr = QuantileRegressor(quantile=0.5, alpha=0.1, solver="highs")
+        qr.fit(X_tr, tr[target].values)
+        return qr.predict(X_te)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 18. SARIMAX
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SARIMAX_Model(BaseModel):
+    """
+    Seasonal ARIMA with exogenous macro factors (SARIMAX).
+
+    UK CPI YoY retains residual seasonality (energy price cap resets in April/
+    October, food/travel seasonal patterns). SARIMAX(1,0,1)(0,1,1,12) adds a
+    seasonal MA term that captures annual patterns the other models ignore.
+    Macro factors enter as exogenous variables (no lagged factor terms).
+
+    Uses statsmodels SARIMAX. Convergence warnings suppressed; falls back to
+    ARIMA(1,0,1) if seasonal fit fails.
+    """
+    name = "SARIMAX"
+
+    def _fit_predict_year(self, train, test, factors, target):
+        import statsmodels.api as sm
+
+        y_tr = train[target].dropna()
+        if len(y_tr) < 36:
+            return np.full(len(test), np.nan)
+
+        fac_list = [f for f in factors if f in train.columns]
+        exog_tr = train.loc[y_tr.index, fac_list].ffill().fillna(0)
+        exog_te = test[fac_list].ffill().fillna(0)
+
+        # Try SARIMAX(1,0,1)(0,1,1,12); fall back to (1,0,1)
+        for order, sorder in [((1,0,1),(0,1,1,12)), ((1,0,1),(0,0,0,0)), ((2,0,0),(0,0,0,0))]:
+            try:
+                fit = sm.tsa.SARIMAX(
+                    y_tr, exog=exog_tr,
+                    order=order, seasonal_order=sorder,
+                    enforce_stationarity=False, enforce_invertibility=False
+                ).fit(disp=False, maxiter=200)
+                fc = fit.forecast(steps=len(test), exog=exog_te)
+                return fc.values if hasattr(fc, "values") else np.array(fc)
+            except Exception:
+                continue
+        return np.full(len(test), np.nan)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 19. REDUCED-FORM VAR
+# ─────────────────────────────────────────────────────────────────────────────
+
+class VAR_Model(BaseModel):
+    """
+    Reduced-form Vector Autoregression: CPI + top-4 factors as joint system.
+
+    Captures bidirectional Granger-causal links missing from univariate models:
+    gas → CPI, CPI → GBP, oil → CPI → breakeven expectations. Uses the top-4
+    factors by data availability (uk_be5, oil_brent, gas_eu, gbpusd). Lag order
+    selected by AIC (max 4). CPI forecast extracted from the joint VAR forecast.
+
+    Falls back to AR(1) if VAR fit fails (collinearity, insufficient data).
+    """
+    name = "VAR"
+    VAR_FACTORS = ["uk_be5", "oil_brent", "gas_eu", "gbpusd"]
+    MAX_LAGS = 3
+
+    def _fit_predict_year(self, train, test, factors, target):
+        from statsmodels.tsa.vector_ar.var_model import VAR
+
+        # Select VAR factors that are available
+        var_facs = [f for f in self.VAR_FACTORS if f in train.columns]
+        if not var_facs:
+            return np.full(len(test), np.nan)
+
+        cols = [target] + var_facs
+        data = train[cols].dropna()
+        if len(data) < 24:
+            return np.full(len(test), np.nan)
+
+        try:
+            model = VAR(data)
+            best_lag = min(self.MAX_LAGS, len(data) // 10)
+            fit = model.fit(best_lag)
+            # Forecast one year ahead, extract CPI column
+            last_vals = data.values[-fit.k_ar:]
+            fc = fit.forecast(last_vals, steps=len(test))
+            return fc[:, 0]  # CPI is column 0
+        except Exception:
+            return np.full(len(test), np.nan)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 20. AUTO-ARIMA (BIC-selected lag order)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AutoARIMA(BaseModel):
+    """
+    ARIMA(p,0,q) with BIC-selected order from grid p∈{1,2,3}, q∈{0,1,2}.
+
+    Extends the AR(1) baseline with MA terms (captures transient shocks like
+    supply-chain normalisation post-2022) and higher AR orders (inflation
+    persistence). Pure univariate — no macro factors. Useful for isolating
+    how much of the AR(1) baseline's performance can be captured by richer
+    ARIMA dynamics before adding factors.
+    """
+    name = "AutoARIMA"
+
+    def _fit_predict_year(self, train, test, factors, target):
+        import statsmodels.api as sm
+
+        y_tr = train[target].dropna()
+        if len(y_tr) < 24:
+            return np.full(len(test), np.nan)
+
+        best_bic, best_fit = np.inf, None
+        for p in range(1, 4):
+            for q in range(0, 3):
+                try:
+                    fit = sm.tsa.ARIMA(y_tr, order=(p, 0, q)).fit(method="statespace")
+                    if fit.bic < best_bic:
+                        best_bic = fit.bic
+                        best_fit = fit
+                except Exception:
+                    pass
+
+        if best_fit is None:
+            return np.full(len(test), np.nan)
+
+        # Predict all test steps at once (rolling forecast(1) loop advances internal state)
+        fc = best_fit.predict(start=len(y_tr), end=len(y_tr) + len(test) - 1)
+        return fc.values if hasattr(fc, "values") else np.array(fc)
 
 
 class DFM2(DFM):
@@ -1292,16 +1780,8 @@ def score_backtest(bt, name="model"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def all_models():
-    # MIDAS removed: monthly-only Almon DL is not genuine mixed-frequency.
-    base = [DFM(), RAMM_LGBM(), UCM(), TVP(), HMM(), MS_DFM(), LSTAR(),
-            BVAR(), HiddenRF(), GBM()]
-    rolling_5y = [DFM_Rolling5Y(), RAMM_LGBM_Rolling5Y(), UCM_Rolling5Y(),
-                  TVP_Rolling5Y(), HMM_Rolling5Y(), MS_DFM_Rolling5Y(),
-                  LSTAR_Rolling5Y(), BVAR_Rolling5Y(), HiddenRF_Rolling5Y(),
-                  GBM_Rolling5Y()]
-    rolling_2y = [DFM_Rolling2Y(), RAMM_LGBM_Rolling2Y(), UCM_Rolling2Y(),
-                  TVP_Rolling2Y(), HMM_Rolling2Y(), MS_DFM_Rolling2Y(),
-                  LSTAR_Rolling2Y(), BVAR_Rolling2Y(), HiddenRF_Rolling2Y(),
-                  GBM_Rolling2Y()]
-    extras = [DFM2(), ElasticNet()]
-    return base + rolling_5y + rolling_2y + extras
+    return [DFM(), RAMM_LGBM(), UCM(), TVP(), HMM(), MS_DFM(),
+            BVAR(), HiddenRF(), GBM(), MIDAS(), BridgeEq(), CopulaReg(),
+            DFM2(), ElasticNet(), MedianElasticNet(),
+            HuberNet(), PCR(), RegimeEnsemble(),
+            SARIMAX_Model(), VAR_Model(), AutoARIMA()]

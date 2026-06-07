@@ -26,6 +26,10 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
+_ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PLOTS = os.path.join(_ROOT, "plots")
+os.makedirs(_PLOTS, exist_ok=True)
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -130,7 +134,7 @@ def tvp_forward(last_beta, last_x, R, delta, n_factors, n_months=6):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="nowcast_2026.png")
+    ap.add_argument("--out", default=os.path.join(_PLOTS, "nowcast_2026.png"))
     ap.add_argument("--train-from", type=int, default=1992)
     ap.add_argument("--n-ahead", type=int, default=6)
     args = ap.parse_args()

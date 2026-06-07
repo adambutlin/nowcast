@@ -41,7 +41,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 
-DATA_DIR    = os.path.join(os.path.dirname(__file__), "data")
+DATA_DIR    = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 FRED_KEY    = os.getenv("FRED_API_KEY")
 BOE_BASE    = "https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/"
 LONG_START  = "1989-01-01"          # CPI YoY (D7G7) starts 1989; pre-1992 used for warmup
@@ -51,10 +51,10 @@ LONG_START  = "1989-01-01"          # CPI YoY (D7G7) starts 1989; pre-1992 used 
 # LOW-LEVEL FETCHERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _fred(series_id):
+def _fred(series_id, start=None):
     """FRED series -> month-end series. Requires FRED_API_KEY."""
     from fredapi import Fred
-    s = Fred(api_key=FRED_KEY).get_series(series_id, observation_start=LONG_START)
+    s = Fred(api_key=FRED_KEY).get_series(series_id, observation_start=start or LONG_START)
     s.index = pd.to_datetime(s.index)
     return s.resample("ME").last()
 
@@ -115,6 +115,107 @@ def _rents_lag1():
     return pd.concat([shifted, extension]).resample("ME").last()
 
 
+def _ons_timeseries(code, section):
+    """
+    Fetch a monthly ONS timeseries via the ONS website JSON API.
+
+    section examples:
+      'employmentandlabourmarket/peopleinwork/earningsandworkinghours'
+      'economy/inflationandpriceindices'
+    Returns month-end pd.Series of float values.
+    """
+    url = (f"https://www.ons.gov.uk/{section}"
+           f"/timeseries/{code}/data")
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    r.raise_for_status()
+    months = r.json().get("months", [])
+    if not months:
+        return pd.Series(dtype=float)
+    rows = []
+    month_map = {"January":1,"February":2,"March":3,"April":4,"May":5,"June":6,
+                 "July":7,"August":8,"September":9,"October":10,"November":11,"December":12}
+    for m in months:
+        try:
+            yr  = int(m["year"])
+            mon = month_map.get(m["month"], 0)
+            val = float(m["value"].replace(",", ""))
+            if mon:
+                rows.append((pd.Timestamp(yr, mon, 1) + pd.offsets.MonthEnd(0), val))
+        except (ValueError, KeyError):
+            continue
+    if not rows:
+        return pd.Series(dtype=float)
+    idx, vals = zip(*rows)
+    return pd.Series(vals, index=idx, dtype=float).sort_index()
+
+
+def _ons_awe_kab9():
+    """ONS AWE KAB9 (whole economy weekly pay, SA level £) with FRED fallback."""
+    try:
+        s = _ons_timeseries(
+            "KAB9",
+            "employmentandlabourmarket/peopleinwork/earningsandworkinghours",
+        )
+        if len(s) > 24:
+            return s
+    except Exception:
+        pass
+    return _fred("LCEAMN01GBM661S")
+
+
+def _ons_vacancies():
+    """
+    ONS VACS01 (Job Vacancy Survey) AP2Y — total vacancies, SA, thousands.
+
+    Fetches direct from ONS xlsx (bypasses dbnomics ingestion lag).
+    The series is a 3-month rolling average; each row is labelled by the
+    last month of the 3-month window, resampled to month-end.
+    Falls back to dbnomics if the ONS file is not yet published.
+    """
+    import io, re
+
+    months_3  = ["jan","feb","mar","apr","may","jun",
+                 "jul","aug","sep","oct","nov","dec"]
+    months_map = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+                  "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+
+    base = ("https://www.ons.gov.uk/file?uri=/employmentandlabourmarket"
+            "/peoplenotinwork/unemployment/datasets"
+            "/vacanciesandunemploymentvacs01/current/vacs01{mon}{yr}.xlsx")
+
+    def parse_3m(s):
+        m = re.match(r"(\w{3})-\s*(\w{3})\s+(\d{4})", str(s))
+        if m:
+            end_m = months_map.get(m.group(2))
+            if end_m:
+                return (pd.Timestamp(int(m.group(3)), end_m, 1)
+                        + pd.offsets.MonthEnd(0))
+        return pd.NaT
+
+    now = pd.Timestamp.now()
+    for offset in range(4):
+        ts  = now - pd.DateOffset(months=offset)
+        url = base.format(mon=months_3[ts.month - 1], yr=ts.year)
+        try:
+            r = requests.get(url, timeout=25,
+                             headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                continue
+            xl = pd.ExcelFile(io.BytesIO(r.content))
+            if "VACS01" not in xl.sheet_names:
+                continue
+            df = xl.parse("VACS01", header=None)
+            idx  = df.iloc[6:, 0].apply(parse_3m)
+            vacs = pd.to_numeric(df.iloc[6:, 2], errors="coerce")
+            s    = pd.Series(vacs.values, index=idx).dropna()
+            if len(s) > 0:
+                return s.resample("ME").last()
+        except Exception:
+            continue
+
+    return _dbnomics("ONS", "UNEM", "AP2Y.M")
+
+
 def _gas_eu_ttf():
     """
     European natural gas: daily TTF front-month (2017+) blended onto IMF monthly
@@ -137,6 +238,34 @@ def _gas_eu_ttf():
         return combined.dropna()
     except Exception:
         return imf
+
+
+def _cpi_yoy_long():
+    """UK CPI YoY from 1956: OECD GBRCPIALLMINMEI (index) YoY%, spliced with ONS D7G7 (1989+)."""
+    try:
+        oecd = _fred("GBRCPIALLMINMEI", start="1948-01-01")
+        oecd_yoy = oecd.pct_change(12).mul(100).resample("ME").last()
+    except Exception:
+        oecd_yoy = pd.Series(dtype=float)
+
+    try:
+        ons = _dbnomics("ONS", "MM23", "D7G7.M")
+        ons = ons.resample("ME").last()
+    except Exception:
+        ons = pd.Series(dtype=float)
+
+    if len(ons) > 0 and len(oecd_yoy) > 0:
+        # Rescale OECD to match ONS units over first 24-month overlap
+        overlap = oecd_yoy.index.intersection(ons.dropna().index)[:24]
+        if len(overlap) >= 6:
+            ratio = ons[overlap].mean() / oecd_yoy[overlap].mean()
+        else:
+            ratio = 1.0
+        combined = (oecd_yoy * ratio).copy()
+        combined.update(ons)          # ONS overwrites OECD wherever available
+        return combined.dropna()
+
+    return (ons if len(ons) > 0 else oecd_yoy).dropna()
 
 
 def _uk_breakeven():
@@ -179,6 +308,11 @@ REGISTRY = {
         fetch=lambda: _dbnomics("ONS", "MM23", "D7G7.M"),
         transform="level", pub_lag=1, candidate=False, csv="cpi_yoy.csv",
         note="ONS CPI All Items YoY (D7G7) via dbnomics. TARGET."),
+    "cpi_yoy_long": dict(
+        fetch=_cpi_yoy_long,
+        transform="level", pub_lag=1, candidate=False, csv="cpi_yoy_long.csv",
+        note="UK CPI YoY 1956+: OECD GBRCPIALLMINMEI spliced with ONS D7G7 (1989+). "
+             "For extended training. Use --target cpi_yoy_long with --train-from 1956."),
 
     # ── core live factors: pub_lag=0 (financial, available before CPI release) ──
     "oil_brent": dict(
@@ -211,6 +345,11 @@ REGISTRY = {
         note="European natural gas: daily TTF front-month (2017+, yfinance TTF=F) "
              "rescaled onto IMF PNGASEUUSDM (1960+). pub_lag=0: daily market price "
              "available same day. Override with data/gas_eu.csv."),
+    "uk_gilt_10y": dict(
+        fetch=lambda: _fred("IRLTLT01GBM156N", start="1960-01-01"),
+        transform="diff", pub_lag=0, candidate=True, csv="uk_gilt_10y.csv",
+        note="UK 10Y government bond yield (FRED IRLTLT01GBM156N) from 1960. "
+             "diff transform for stationarity. pub_lag=0: daily market rate."),
     "oil_vol_6m": dict(
         fetch=lambda: np.log(_fred("DCOILBRENTEU")).diff().rolling(6).std(),
         transform="level", pub_lag=0, candidate=True, csv="oil_vol_6m.csv",
@@ -219,13 +358,223 @@ REGISTRY = {
         fetch=lambda: np.log(_fred("DEXUSUK")).diff().rolling(6).std(),
         transform="level", pub_lag=0, candidate=True, csv="gbpusd_vol_6m.csv",
         note="6m rolling std of GBP/USD log-return. Import uncertainty proxy. pub_lag=0."),
+    # ── 3-month cumulative log-returns: capture sustained cost-push channel ────
+    # Monthly logret shows the period change; 3m cumulative captures whether
+    # prices are still elevated 3 months after a spike (CPI lag ≈ 2-4 months).
+    "oil_brent_3m": dict(
+        fetch=lambda: np.log(_fred("DCOILBRENTEU")).diff(3),
+        transform="level", pub_lag=0, candidate=True, csv="oil_brent_3m.csv",
+        note="Brent 3-month cumulative log-return. Captures sustained energy cost-push "
+             "vs one-period spike. Complements oil_brent (1m). pub_lag=0."),
+    "gas_eu_3m": dict(
+        fetch=lambda: _gas_eu_ttf().pipe(np.log).diff(3),
+        transform="level", pub_lag=0, candidate=True, csv="gas_eu_3m.csv",
+        note="European gas 3-month cumulative log-return (TTF/IMF blend). Captures "
+             "sustained gas cost-push with 2-4 month CPI transmission lag. pub_lag=0."),
+    "gbpusd_3m": dict(
+        fetch=lambda: np.log(_fred("DEXUSUK")).diff(3),
+        transform="level", pub_lag=0, candidate=True, csv="gbpusd_3m.csv",
+        note="GBP/USD 3-month cumulative log-return. Import price pressure proxy "
+             "over quarter horizon. Complements gbpusd (1m). pub_lag=0."),
+
+    # ── GBP cross-rates and effective exchange rate ──────────────────────────
+    # GBP/EUR separates true UK import-price pressure from USD-cycle effects.
+    # A USD depreciation episode raises oil_brent (priced in USD) and lowers
+    # gbpusd (GBP strengthens vs USD) simultaneously, creating partially
+    # offsetting signals. GBP/EUR isolates the Europe-UK trade channel which
+    # directly sets import prices for ~40% of UK goods trade.
+    "gbp_eur": dict(
+        fetch=lambda: (
+            _fred("DEXUSUK") / _fred("DEXUSEU").reindex(
+                _fred("DEXUSUK").index, method="ffill")
+        ),
+        transform="logret", pub_lag=0, candidate=True, csv="gbp_eur.csv",
+        note="GBP/EUR cross-rate (FRED DEXUSUK / DEXUSEU, EUR per GBP). 1999+. "
+             "pub_lag=0: daily market rate. Isolates Europe↔UK import price channel "
+             "from global USD cycle. UK ~40% of goods trade with EU. "
+             "Falls back to data/gbp_eur.csv."),
+    "gbp_eer": dict(
+        fetch=lambda: _fred("RBGBBIS"),
+        transform="diff", pub_lag=0, candidate=True, csv="gbp_eer.csv",
+        note="UK real broad effective exchange rate, BIS (FRED RBGBBIS, 2020=100). "
+             "1994+. pub_lag=0: monthly index from BIS. Captures import price "
+             "pressure across ALL UK trading partners, not just USD or EUR. "
+             "diff transform for stationarity. Complement to gbpusd (bilateral USD)."),
+
+    # ── Tech / semiconductor input costs ─────────────────────────────────────
+    "semiconductors_ppi": dict(
+        fetch=lambda: _fred("PCU334413334413"),
+        transform="logret", pub_lag=0, candidate=True, csv="semiconductors_ppi.csv",
+        note="US BLS PPI for semiconductor devices (FRED PCU334413334413, 1967+). "
+             "pub_lag=0: globally priced in USD. Semiconductors are key input to UK "
+             "electronics, autos (EV), machinery. Persistent deflationary trend "
+             "(Moore's Law) interrupted by supply shocks (2020-22 chip shortage). "
+             "Falls back to data/semiconductors_ppi.csv."),
+    "battery_metals_proxy": dict(
+        fetch=None, transform="level",
+        pub_lag=0, candidate=True, csv="battery_metals_proxy.csv",
+        note="Rare earth / battery metal input costs proxy. No free monthly series. "
+             "Recommended sources: "
+             "(1) Benchmark Mineral Intelligence lithium carbonate price (subscription); "
+             "(2) USGS Mineral Commodity Summaries (annual only); "
+             "(3) LME cobalt official price (LME website, monthly avg). "
+             "Covers: lithium carbonate, cobalt sulfate, graphite (anode-grade), "
+             "silicon metal, neodymium (NdFeB magnets), dysprosium. "
+             "pub_lag=0 for futures/spot; pub_lag=1 for USGS. "
+             "Drop data/battery_metals_proxy.csv [date, value=index or price_level]."),
+
+    # ── Global shipping / supply chain ────────────────────────────────────────
+    "deep_sea_freight": dict(
+        fetch=lambda: _fred("PCU483111483111"),
+        transform="logret", pub_lag=0, candidate=True, csv="deep_sea_freight.csv",
+        note="US BLS PPI for deep sea freight transportation (FRED PCU483111483111, "
+             "1988+). pub_lag=0. Globally priced — reflects container and bulk "
+             "shipping cost changes. Strong correlation with Baltic Dry Index (BDI). "
+             "Supply-chain bottleneck signal: rose 3× in 2021-22, fell 2023. "
+             "Transmits into UK goods CPI with 2-4 month lag. "
+             "Fallback: data/deep_sea_freight.csv."),
+    "global_supply_chain_pressure": dict(
+        fetch=None, transform="level",
+        pub_lag=0, candidate=True, csv="global_supply_chain_pressure.csv",
+        note="NY Fed Global Supply Chain Pressure Index (GSCPI). Standardised "
+             "composite of BDI, air freight, PMI backlogs, cross-country PPI "
+             "divergence. Monthly, 1997+. Not on FRED; fetch from NY Fed directly: "
+             "https://www.newyorkfed.org/research/policy/gscpi (Excel download). "
+             "pub_lag=0. Validated predictor of global goods inflation 1-3 months "
+             "ahead. Drop data/global_supply_chain_pressure.csv [date, value=index]."),
+
+    # ── Global commodity input costs: pub_lag=0 (market prices, contemporaneous) ─
+    # Key non-energy intermediary inputs for UK manufacturing supply chain.
+    # All individual metals confirmed on FRED (PCOPPUSDM, PALUMUSDM, PNICKUSDM,
+    # PZINCUSDM, PIORECRUSDM). Transmission lag to UK CPI: 1-3 months via
+    # import→PPI→CPI channel. IMF composite index not available on FRED;
+    # metals_index computed as equal-weight average log-return across 5 metals.
+    "metals_index": dict(
+        fetch=lambda: (
+            np.log(_fred("PCOPPUSDM")).diff()
+            .add(np.log(_fred("PALUMUSDM")).diff(), fill_value=np.nan)
+            .add(np.log(_fred("PNICKUSDM")).diff(), fill_value=np.nan)
+            .add(np.log(_fred("PZINCUSDM")).diff(), fill_value=np.nan)
+            .add(np.log(_fred("PIORECRUSDM")).diff(), fill_value=np.nan)
+            .div(5)
+        ),
+        transform="level", pub_lag=0, candidate=True, csv="metals_index.csv",
+        note="Equal-weight avg log-return: copper, aluminium, nickel, zinc, iron ore "
+             "(FRED PCOPPUSDM/PALUMUSDM/PNICKUSDM/PZINCUSDM/PIORECRUSDM). 1992+. "
+             "pub_lag=0. Covers UK manufacturing inputs: autos, construction, packaging, "
+             "industrial goods. Falls back to data/metals_index.csv."),
+    "copper_price": dict(
+        fetch=lambda: _fred("PCOPPUSDM"), transform="logret",
+        pub_lag=0, candidate=True, csv="copper_price.csv",
+        note="LME copper grade-A cathode spot (FRED PCOPPUSDM, USD/metric ton). "
+             "pub_lag=0. Leading economic cycle indicator; UK key input: construction, "
+             "wiring, machinery. 1992+."),
+    "nickel_price": dict(
+        fetch=lambda: _fred("PNICKUSDM"), transform="logret",
+        pub_lag=0, candidate=True, csv="nickel_price.csv",
+        note="LME nickel spot (FRED PNICKUSDM, USD/metric ton). pub_lag=0. "
+             "Stainless steel, battery production. 1980+."),
+    "iron_ore_price": dict(
+        fetch=lambda: _fred("PIORECRUSDM"), transform="logret",
+        pub_lag=0, candidate=True, csv="iron_ore_price.csv",
+        note="Iron ore (FRED PIORECRUSDM, USD/dry metric ton). pub_lag=0. "
+             "Steel production input — upstream of construction and auto costs. 1980+."),
+    "timber_price": dict(
+        fetch=lambda: _fred("WPU081"), transform="logret",
+        pub_lag=0, candidate=True, csv="timber_price.csv",
+        note="US BLS PPI for lumber & wood products (FRED WPU081, index 1982=100). "
+             "pub_lag=0. Globally priced commodity — strong correlation with UK "
+             "construction material costs (Spearman ~0.7). 1926+. "
+             "Fallback: data/timber_price.csv."),
+    "chemicals_ppi": dict(
+        fetch=lambda: _fred("WPU061"), transform="logret",
+        pub_lag=0, candidate=True, csv="chemicals_ppi.csv",
+        note="US BLS PPI for industrial chemicals and allied products (FRED WPU061, "
+             "index 1982=100). pub_lag=0. Globally priced (USD-denominated feedstock "
+             "markets). Proxy for UK chemical intermediary import costs. 1933+. "
+             "Transmits into consumer goods, food packaging, plastics. "
+             "Fallback: data/chemicals_ppi.csv."),
+
+    # ── UK domestic activity and costs: pub_lag=1 ────────────────────────────
+    "uk_monthly_gdp": dict(
+        fetch=lambda: _fred("GBRPROINDMISMEI"), transform="yoy",
+        pub_lag=1, candidate=True, csv="uk_monthly_gdp.csv",
+        note="UK industrial production index, SA, YoY% (FRED GBRPROINDMISMEI, OECD). "
+             "pub_lag=1: released ~4-6 weeks after reference month, before CPI. "
+             "Activity proxy — above-trend output → domestic demand → services CPI. "
+             "True monthly GDP (ONS ABMI series) available as CSV drop-in. "
+             "Drop data/uk_monthly_gdp.csv [date, value=YoY%] for exact GDP."),
+    "uk_awg": dict(
+        fetch=lambda: _ons_awe_kab9(),
+        transform="yoy", pub_lag=1, candidate=True, csv="uk_awg.csv",
+        note="ONS AWE: Whole Economy weekly pay, SA level (£), series KAB9. "
+             "YoY transform gives nominal wage growth %. 2000+, current to ~6 weeks lag. "
+             "pub_lag=1: ONS AWE released same window as CPI. "
+             "Critical for services CPI — wages dominate domestic services inflation. "
+             "Falls back to FRED LCEAMN01GBM661S (OECD, 1990+, slightly stale). "
+             "Override: data/uk_awg.csv [date, value=YoY%]."),
+    "uk_ppi_input": dict(
+        fetch=None, transform="yoy",
+        pub_lag=1, candidate=True, csv="uk_ppi_input.csv",
+        note="ONS PPI Input prices YoY (materials/fuels purchased by UK manufacturers). "
+             "pub_lag=1: released ~3-4 weeks after reference month. "
+             "Direct cost-push signal: input→output→CPI with 1-3m lag. "
+             "No free live API: ONS timeseries API decommissioned; MM22 dbnomics unavailable. "
+             "Download from ONS: https://www.ons.gov.uk/economy/inflationandpriceindices/"
+             "bulletins/producerpriceinflationnewformat/latest (series K37R, total input). "
+             "Drop data/uk_ppi_input.csv [date, value=YoY%]."),
+    "uk_ftse250": dict(
+        fetch=lambda: _yf("^FTMC"), transform="logret",
+        pub_lag=0, candidate=True, csv="uk_ftse250.csv",
+        note="FTSE 250 mid-cap index (yfinance ^FTMC, 1990+). pub_lag=0. "
+             "UK domestic corporate profit proxy: ~80% of FTSE 250 revenues are UK-based "
+             "vs ~25% for FTSE 100 (which is dominated by BP, HSBC, miners, international). "
+             "Rising FTSE 250 → improving UK domestic demand and corporate pricing power "
+             "→ demand-pull inflation signal with 2-4 month lag to CPI. "
+             "Different signal to uk_be5 (expectations) or uk_gilt_10y (rates)."),
+    "uk_ftse100": dict(
+        fetch=lambda: _yf("^FTSE"), transform="logret",
+        pub_lag=0, candidate=True, csv="uk_ftse100.csv",
+        note="FTSE 100 large-cap index (yfinance ^FTSE, 1990+). pub_lag=0. "
+             "Captures global earnings cycle and UK financial conditions. "
+             "~75% revenues international — use uk_ftse250 for domestic profit signal. "
+             "FTSE 100 vs FTSE 250 divergence can signal domestic/international decoupling. "
+             "Complement to uk_be5 (inflation expectations) and gbpusd (FX conditions)."),
+
+    # ── Global food commodity prices: pub_lag=0 ──────────────────────────────
+    # COLLINEARITY WARNING: food IS ~10-15% of UK CPI basket. Using CONTEMPORANEOUS
+    # UK food CPI as a factor would be circular (leakage). However, global commodity
+    # prices are appropriate because:
+    # (1) They are set on futures markets BEFORE retail prices adjust (2-4 month lag).
+    # (2) They are pub_lag=0 (available before CPI release), not published with CPI.
+    # (3) Models are evaluated OOS — SHAP screen validates incremental signal.
+    # Risk check: run probe_leakage() on these factors before live use.
+    "food_price_index": dict(
+        fetch=lambda: _fred("PFOODINDEXM"),
+        transform="logret", pub_lag=0, candidate=True, csv="food_price_index.csv",
+        note="IMF Food and Beverage Price Index (FRED PFOODINDEXM, USD, 2016=100, 1992+). "
+             "pub_lag=0: IMF IFS monthly. Covers cereals, vegetable oils, meat, seafood, "
+             "sugar, bananas, oranges. UK food CPI transmission lag ~2-4 months. "
+             "COLLINEARITY WARNING: food is ~10-15% of UK CPI; use only if "
+             "probe_leakage() confirms no contemporaneous circular signal. "
+             "Fallback: data/food_price_index.csv."),
+    "wheat_price": dict(
+        fetch=lambda: _fred("PWHEAMTUSDM"),
+        transform="logret", pub_lag=0, candidate=True, csv="wheat_price.csv",
+        note="IMF wheat price (FRED PWHEAMTUSDM, USD/metric ton, 1980+). pub_lag=0. "
+             "Wheat → flour → bread/pasta: 3-5 month transmission to UK retail. "
+             "Better granularity than food_price_index for bread/cereals sub-category. "
+             "2022 Ukraine war spike (+90%) captured here 3 months before UK food CPI. "
+             "Fallback: data/wheat_price.csv."),
+    "vegetable_oil_price": dict(
+        fetch=lambda: _fred("PSOYBUSDM"),
+        transform="logret", pub_lag=0, candidate=True, csv="vegetable_oil_price.csv",
+        note="IMF soybean price (FRED PSOYBUSDM, USD/metric ton, 1980+). pub_lag=0. "
+             "Proxy for vegetable oil complex (soy, palm, rapeseed): key UK food "
+             "manufacturing input (cooking oil, margarine, processed food). "
+             "Also use PVOILUSDM (palm oil) if available. Fallback: data/vegetable_oil_price.csv."),
 
     # ── US macro proxies via FRED: pub_lag=0 (released before UK CPI) ───────
-    "us_ism_pmi": dict(
-        fetch=lambda: _fred("NAPM"), transform="level",
-        pub_lag=0, candidate=True, region="US", csv="us_ism_pmi.csv",
-        note="ISM Manufacturing PMI (FRED NAPM). Released 1st business day of T+1. "
-             "pub_lag=0. region=US — excluded from UK-only runs."),
     "us_ppi_all": dict(
         fetch=lambda: _fred("PPIACO").pct_change(12) * 100, transform="level",
         pub_lag=0, candidate=True, region="US", csv="us_ppi_all.csv",
@@ -248,17 +597,34 @@ REGISTRY = {
              "so _nowcast_row ffills the most-recently-published rents YoY. "
              "Spearman rho=0.922 at lag=1."),
     "uk_vacancies": dict(
-        fetch=lambda: _dbnomics("ONS", "UNEM", "AP2Y.M"), transform="logret",
+        fetch=_ons_vacancies, transform="logret",
         pub_lag=1, candidate=True, csv="uk_vacancies.csv",
-        note="ONS vacancies (thousands). pub_lag=1: typically 4-6 weeks after reference month."),
+        note="ONS vacancies (thousands), 3-month rolling SA (AP2Y). "
+             "Fetched directly from ONS VACS01 xlsx (bypasses dbnomics lag). "
+             "pub_lag=1: vacancy survey published ~5 weeks after reference month."),
     "uk_house_prices": dict(
-        fetch=lambda: _dbnomics("ONS", "HPSSA", "HPI.M"), transform="yoy",
-        pub_lag=2, candidate=True, csv="uk_house_prices.csv",
-        note="ONS House Price Index. pub_lag=2: published ~6-8 weeks after reference month."),
+        fetch=lambda: (
+            _fred("QGBR628BIS")           # BIS quarterly real UK residential HPI
+            .resample("ME").ffill()        # forward-fill quarters → monthly
+        ),
+        transform="yoy", pub_lag=2, candidate=True, csv="uk_house_prices.csv",
+        note="BIS real residential property price index for UK (FRED QGBR628BIS, "
+             "2010=100, 1968+). Quarterly source forward-filled to monthly. "
+             "pub_lag=2: ONS HPI published ~6-8 weeks after reference month. "
+             "ONS timeseries API decommissioned; dbnomics ONS/HPSSA unavailable. "
+             "Drop data/uk_house_prices.csv [date, value=YoY%] for monthly ONS HPI "
+             "(download from: https://www.gov.uk/government/collections/"
+             "uk-house-price-index-reports)."),
     "uk_paye": dict(
-        fetch=lambda: _dbnomics("ONS", "RTI", "median_pay.M"), transform="yoy",
-        pub_lag=1, candidate=True, csv="uk_paye.csv",
-        note="ONS PAYE RTI median pay. pub_lag=1."),
+        fetch=lambda: _ons_timeseries(
+            "KAB9",
+            "employmentandlabourmarket/peopleinwork/earningsandworkinghours"
+        ),
+        transform="yoy", pub_lag=1, candidate=True, csv="uk_paye.csv",
+        note="ONS AWE: Whole Economy weekly pay, SA level (£) — series KAB9 via "
+             "ONS website JSON API. YoY transform gives wage growth %. "
+             "pub_lag=1: AWE released ~5-6 weeks after reference month. 2000+. "
+             "Falls back to data/uk_paye.csv [date, value=YoY%]."),
 
     # ── UK CPI components: pub_lag=1 (released same day as headline CPI) ────
     "uk_cpih": dict(
@@ -281,9 +647,11 @@ REGISTRY = {
     "uk_ppi_output": dict(
         fetch=None, transform="yoy",
         pub_lag=1, candidate=True, csv="uk_ppi_output.csv",
-        note="ONS PPI Output prices YoY. pub_lag=1: typically 3-4 weeks after reference "
-             "month but same window as CPI. CSV drop-in. Source: ONS PPI release. "
-             "Drop data/uk_ppi_output.csv [date, value=index level]."),
+        note="ONS PPI Output prices YoY (home sales, series L3DW in MM22). "
+             "pub_lag=1: released ~3-4 weeks after reference month. "
+             "No free live API available (ONS timeseries API decommissioned). "
+             "Download from ONS PPI bulletin (series L3DW). "
+             "Drop data/uk_ppi_output.csv [date, value=YoY%]."),
     "uk_trimmed_mean_cpi": dict(
         fetch=None, transform="level",
         pub_lag=1, candidate=True, csv="uk_trimmed_mean_cpi.csv",

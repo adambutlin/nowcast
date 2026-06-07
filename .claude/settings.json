@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/Adam/Documents/home/quant/nowcast/.claude/organize.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

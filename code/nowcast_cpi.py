@@ -37,6 +37,13 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
+# project-root-relative output dirs (works whether run from root or code/)
+_ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DATA  = os.path.join(_ROOT, "data")
+_PLOTS = os.path.join(_ROOT, "plots")
+os.makedirs(_DATA,  exist_ok=True)
+os.makedirs(_PLOTS, exist_ok=True)
+
 import factors as F
 import uk_model_zoo as Z
 
@@ -45,11 +52,13 @@ import uk_model_zoo as Z
 # AR(1) BASELINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def ar1_backtest(df, target, start_year=2015, min_train=60):
+def ar1_backtest(df, target, start_year=2015, min_train=60, end_year=None):
     """Expanding-window AR(1): fit rho + mu on train, predict each test obs using realized lag."""
     series = df[target].dropna()
     rows = []
-    for yr in sorted(y for y in series.index.year.unique() if y >= start_year):
+    years = [y for y in series.index.year.unique()
+             if y >= start_year and (end_year is None or y <= end_year)]
+    for yr in sorted(years):
         train = series[series.index.year < yr]
         test  = series[series.index.year == yr]
         if len(train) < min_train or len(test) == 0:
@@ -342,6 +351,30 @@ def _regime_labels_dfm(df, factors, target):
                          index=d.index)
 
 
+def _regime_labels_dfm_k2(df, factors, target):
+    """DFM k=2 regime labels: KMeans-2 on two latent factor scores."""
+    from statsmodels.tsa.statespace.dynamic_factor import DynamicFactor
+    from sklearn.cluster import KMeans
+    d = Z._prep(df, factors, target)
+    obs = factors + [target]
+    z, _, _ = Z._zscore(d, obs)
+    clean = z.dropna()
+    try:
+        res = DynamicFactor(clean, k_factors=2, factor_order=1,
+                            error_order=1).fit(maxiter=300, disp=False)
+        F2 = np.asarray(res.filtered_state[:2]).T  # (T, 2)
+        km = KMeans(n_clusters=2, random_state=0, n_init=10).fit(F2)
+        labels_raw = km.labels_
+        # r1 = cluster with higher mean of first factor (higher-activity regime)
+        means = [F2[labels_raw == k, 0].mean() for k in range(2)]
+        hi = int(np.argmax(means))
+        return pd.Series([f"r{1 if l == hi else 0}" for l in labels_raw],
+                         index=clean.index)
+    except Exception:
+        return pd.Series(np.where(d[target] > d[target].mean(), "r1", "r0"),
+                         index=d.index)
+
+
 def _regime_labels_vix(df):
     """Manual VIX-based regime: above expanding median = stress (r1)."""
     if "vix" not in df.columns:
@@ -380,7 +413,7 @@ def _ar1_in_regime(series, regime_label, min_train=20):
 
 
 def regime_model_combine(df, factors, target, models, start_year=2015,
-                          regime_methods=None, min_regime_train=30):
+                          end_year=None, regime_methods=None, min_regime_train=30):
     """
     Regime-first framework: split training data by regime, train each model
     per-regime, drop models that don't beat AR(1) within that regime, build
@@ -424,6 +457,8 @@ def regime_model_combine(df, factors, target, models, start_year=2015,
                 labels = _regime_labels_lstar(df, factors, target)
             elif method == "dfm":
                 labels = _regime_labels_dfm(df, factors, target)
+            elif method == "dfm_k2":
+                labels = _regime_labels_dfm_k2(df, factors, target)
             elif method == "manual_vix":
                 labels = _regime_labels_vix(df)
             else:
@@ -446,7 +481,8 @@ def regime_model_combine(df, factors, target, models, start_year=2015,
             for r in regimes:
                 regime_idx = labels[labels == r].index
                 rows = []
-                for yr in sorted(y for y in df.index.year.unique() if y >= start_year):
+                for yr in sorted(y for y in df.index.year.unique()
+                                 if y >= start_year and (end_year is None or y <= end_year)):
                     # regime-r training data: years < yr AND regime == r
                     train_all   = df[df.index.year < yr]
                     train_r_idx = regime_idx.intersection(train_all.index)
@@ -467,7 +503,8 @@ def regime_model_combine(df, factors, target, models, start_year=2015,
                         preds = m._fit_predict_year(train, test_r, factors, target)
                         for date, actual, pred in zip(
                                 test_r.index, test_r[target].values, preds):
-                            if np.isfinite(actual) and np.isfinite(pred):
+                            # sanity: CPI YoY can't plausibly exceed ±50%
+                            if np.isfinite(actual) and np.isfinite(pred) and abs(pred) < 50:
                                 rows.append(dict(date=date, actual=float(actual),
                                                  pred=float(pred), year=yr))
                     except Exception:
@@ -565,7 +602,7 @@ def regime_model_combine(df, factors, target, models, start_year=2015,
         # ── overall AR(1) on same test dates ─────────────────────────────
         if not bt_meta.empty:
             common_dates = bt_meta.index
-            ar1_bt = ar1_backtest(df, target, start_year=start_year)
+            ar1_bt = ar1_backtest(df, target, start_year=start_year, end_year=end_year)
             ar1_common = ar1_bt.reindex(common_dates).dropna()
             ar1_overall = float(np.sqrt(((ar1_common["actual"] - ar1_common["pred"])**2).mean())) \
                 if len(ar1_common) > 0 else np.nan
@@ -620,7 +657,8 @@ def print_rmc_results(rmc_results, bt_dict):
                                            aggfunc="first")
             for col in pivot.columns:
                 r_ar1 = ar1_by_r.get(col, np.nan)
-                print(f"    Regime {col}  [AR(1)={r_ar1:.3f if not np.isnan(r_ar1) else '?'}]:")
+                ar1_str = f"{r_ar1:.3f}" if not np.isnan(r_ar1) else "?"
+                print(f"    Regime {col}  [AR(1)={ar1_str}]:")
                 col_data = pivot[col].dropna().sort_values()
                 for m_name, rmse_val in col_data.items():
                     beat_str = "✓" if pivot_beats.loc[m_name, col] else " "
@@ -653,29 +691,40 @@ def print_rmc_results(rmc_results, bt_dict):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start",      type=int, default=2015, help="first backtest year")
+    ap.add_argument("--end",        type=int, default=2024,
+                    help="last backtest year (default 2024; 2025+ reserved as blind test)")
     ap.add_argument("--train-from", type=int, default=1992, help="earliest training data year")
     ap.add_argument("--rmc",        action="store_true",
                     help="run regime-model-combine framework (slow: ~3-5 min extra)")
     ap.add_argument("--rmc-methods", nargs="+",
                     default=["hmm", "lstar", "dfm", "manual_vix"],
                     help="which RMC regime methods to run")
+    ap.add_argument("--rmc-top-k", type=int, default=None,
+                    help="pre-filter to top-N models by RMSE before RMC (default: all)")
     ap.add_argument("--quiet",      action="store_true")
-    ap.add_argument("--shap-screen", action="store_true",
-                    help="run Shapley factor screening; drop candidates below threshold")
+    ap.add_argument("--shap-screen", action="store_true", default=True,
+                    help="run Shapley factor screening; drop candidates below threshold (default: on)")
+    ap.add_argument("--no-shap-screen", dest="shap_screen", action="store_false",
+                    help="disable Shapley factor screening")
     ap.add_argument("--shap-threshold", type=float, default=0.001,
                     help="mean |SHAP| threshold for screen_candidates (default 0.001)")
+    ap.add_argument("--target", default="cpi_yoy",
+                    help="target series: cpi_yoy (default) or cpi_yoy_long for extended history")
     args = ap.parse_args()
 
     print("Loading factor matrix …")
     df_raw, status = F.build_matrix()
     live_facs  = [n for n, s in status.items()
-                  if s != "unavailable" and n != "cpi_yoy"
+                  if s != "unavailable"
+                  and n not in ("cpi_yoy", "cpi_yoy_long")  # never use CPI-level as factor
                   and F.REGISTRY.get(n, {}).get("region") != "US"
                   and n != "uk_rents"          # collinear with uk_rents_lag1 after pub-lag
-                  and n not in ("uk_cpih", "uk_services_cpi")]  # CPI measures predicting CPI — circular
-    target     = "cpi_yoy"
+                  and n != "uk_paye"           # identical to uk_awg (both use ONS KAB9)
+                  and n not in ("uk_cpih", "uk_services_cpi")  # CPI measures predicting CPI — circular
+                  and n != "gas_eu_3m"]  # ablation: adds noise, drops RMSE 0.024 vs gas_eu alone
+    target     = args.target
     if target not in df_raw.columns:
-        sys.exit("cpi_yoy unavailable — check dbnomics / data/ CSV.")
+        sys.exit(f"{target} unavailable — check dbnomics / data/ CSV.")
 
     # trim to training start
     df_raw = df_raw[df_raw.index.year >= args.train_from]
@@ -703,11 +752,12 @@ def main():
     # ── run all models ──────────────────────────────────────────────────────
     models   = Z.all_models()
     bt_dict  = {}
-    print(f"\nRunning {len(models)} models (backtest start {args.start}) …")
+    print(f"\nRunning {len(models)} models (backtest {args.start}–{args.end}) …")
     for m in models:
         print(f"  {m.name:<18}", end="", flush=True)
         try:
-            bt = m.backtest(df, live_facs, target, start_year=args.start)
+            bt = m.backtest(df, live_facs, target, start_year=args.start,
+                            end_year=args.end)
             bt_dict[m.name] = bt
             n = len(bt)
             rmse = float(np.sqrt(((bt["actual"] - bt["pred"])**2).mean())) if n else np.nan
@@ -719,7 +769,7 @@ def main():
     # ── AR(1) baseline ──────────────────────────────────────────────────────
     print("  AR(1)             ", end="", flush=True)
     try:
-        bt_ar1 = ar1_backtest(df, target, start_year=args.start)
+        bt_ar1 = ar1_backtest(df, target, start_year=args.start, end_year=args.end)
         bt_dict["AR(1)"] = bt_ar1
         n = len(bt_ar1)
         rmse = float(np.sqrt(((bt_ar1["actual"] - bt_ar1["pred"])**2).mean())) if n else np.nan
@@ -864,10 +914,23 @@ def main():
     # ── REGIME-MODEL-COMBINE ────────────────────────────────────────────────
     rmc_results = {}
     if args.rmc:
+        # optionally pre-filter to top-k models by RMSE before RMC
+        if args.rmc_top_k is not None:
+            model_rmses = {
+                m.name: float(np.sqrt(((bt_dict[m.name]["actual"] - bt_dict[m.name]["pred"])**2).mean()))
+                for m in models
+                if bt_dict.get(m.name) is not None and len(bt_dict[m.name]) > 0
+            }
+            top_names = sorted(model_rmses, key=model_rmses.get)[:args.rmc_top_k]
+            models_for_rmc = [m for m in models if m.name in top_names]
+            print(f"\nRMC top-{args.rmc_top_k} filter: {top_names}")
+        else:
+            models_for_rmc = models
         print(f"\nRunning regime-model-combine ({args.rmc_methods}) …")
         rmc_results = regime_model_combine(
-            df, live_facs, target, models,
+            df, live_facs, target, models_for_rmc,
             start_year=args.start,
+            end_year=args.end,
             regime_methods=args.rmc_methods,
         )
         print_rmc_results(rmc_results, bt_dict)
@@ -895,21 +958,25 @@ def main():
             out_rows.append(b)
     if out_rows:
         out = pd.concat(out_rows).reset_index()
-        out.to_csv("nowcast_cpi_backtest.csv", index=False)
-        print("\nSaved → nowcast_cpi_backtest.csv")
+        p = os.path.join(_DATA, "nowcast_cpi_backtest.csv")
+        out.to_csv(p, index=False)
+        print(f"\nSaved → {p}")
 
-    mdf.to_csv("nowcast_cpi_metrics.csv")
-    print("Saved → nowcast_cpi_metrics.csv")
+    p = os.path.join(_DATA, "nowcast_cpi_metrics.csv")
+    mdf.to_csv(p)
+    print(f"Saved → {p}")
 
     if not spa.empty:
-        spa.to_csv("nowcast_cpi_spa.csv")
-        print("Saved → nowcast_cpi_spa.csv")
+        p = os.path.join(_DATA, "nowcast_cpi_spa.csv")
+        spa.to_csv(p)
+        print(f"Saved → {p}")
 
     if rmc_results:
         for method, res in rmc_results.items():
             if not res["perf"].empty:
-                res["perf"].to_csv(f"rmc_{method}_perf.csv", index=False)
-                print(f"Saved → rmc_{method}_perf.csv")
+                p = os.path.join(_DATA, f"rmc_{method}_perf.csv")
+                res["perf"].to_csv(p, index=False)
+                print(f"Saved → {p}")
 
     # ── CURRENT NOWCAST ─────────────────────────────────────────────────────
     print("\n" + "═" * 65)
@@ -928,8 +995,9 @@ def main():
             nowcast_rows.append(dict(model=m.name, nowcast=np.nan, date="error"))
     nc_df = pd.DataFrame(nowcast_rows).set_index("model")
     print(nc_df.to_string())
-    nc_df.to_csv("nowcast_cpi_nowcast.csv")
-    print("\nSaved → nowcast_cpi_nowcast.csv")
+    p = os.path.join(_DATA, "nowcast_cpi_nowcast.csv")
+    nc_df.to_csv(p)
+    print(f"\nSaved → {p}")
 
 
 if __name__ == "__main__":
