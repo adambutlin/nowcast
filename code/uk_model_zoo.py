@@ -129,6 +129,7 @@ class BaseModel:
                 min_train=24, end_year=None):
         d = _prep(df, factors, target)
         rows = []
+        n_warns = 0
         years = d.index.year.unique()
         years = [y for y in years if y >= start_year and (end_year is None or y <= end_year)]
         for yr in sorted(years):
@@ -146,15 +147,22 @@ class BaseModel:
             if len(train) < min_train or len(test) == 0:
                 continue
             try:
-                preds = self._fit_predict_year(train, test, factors, target)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    preds = self._fit_predict_year(train, test, factors, target)
+                n_warns_fold = len(caught)
             except Exception:
                 continue
+            n_warns += n_warns_fold
             preds = np.clip(preds, self.PRED_MIN, self.PRED_MAX)
             for date, actual, pred in zip(test.index, test[target].values, preds):
                 if np.isfinite(actual) and np.isfinite(pred):
                     rows.append(dict(date=date, actual=float(actual),
                                      pred=float(pred), year=yr))
-        return pd.DataFrame(rows).set_index("date") if rows else pd.DataFrame()
+        df = pd.DataFrame(rows).set_index("date") if rows else pd.DataFrame()
+        if not df.empty:
+            df["n_warns"] = n_warns
+        return df
 
     def importance(self, df, factors, target):
         return pd.Series(dtype=float), self.importance_type
@@ -316,7 +324,7 @@ class RAMM_LGBM(BaseModel):
             "gas_eu": 1, "cpi_lag1": 1, "cpi_3m_chg": 1}
 
     def _feats(self, factors):
-        return factors + [self.LAG, self.MOM]
+        return list(factors) + [f for f in [self.LAG, self.MOM] if f not in factors]
 
     def _add_lag(self, frame, target):
         f = frame.copy()
@@ -975,7 +983,7 @@ class HiddenRF(BaseModel):
         return f
 
     def _feats(self, factors):
-        return factors + [self.LAG, self.MOM]
+        return list(factors) + [f for f in [self.LAG, self.MOM] if f not in factors]
 
     def _fit_predict_year(self, train, test, factors, target):
         from sklearn.ensemble import RandomForestRegressor
@@ -1057,7 +1065,7 @@ class GBM(BaseModel):
         return f
 
     def _feats(self, factors):
-        return factors + [self.LAG, self.MOM]
+        return list(factors) + [f for f in [self.LAG, self.MOM] if f not in factors]
 
     def _model(self):
         try:
@@ -1103,7 +1111,7 @@ class ElasticNet(BaseModel):
     MOM = "cpi_3m_chg"
 
     def _feats(self, factors):
-        return factors + [self.LAG, self.MOM]
+        return list(factors) + [f for f in [self.LAG, self.MOM] if f not in factors]
 
     def _add_lag(self, frame, target):
         f = frame.copy()
@@ -1287,17 +1295,17 @@ class CopulaReg(BaseModel):
         return f
 
     @staticmethod
-    def _normal_scores(vals, ref):
-        from scipy.stats import norm
+    def _t_scores(vals, ref, df):
+        from scipy.stats import t as _t_dist
         n = len(ref)
         ref_s = np.sort(ref)
         r = np.searchsorted(ref_s, vals) + 0.5
         r = np.clip(r, 0.5, n + 0.5)   # keep within [1/(n+1), n/(n+1)] after division
-        return norm.ppf(r / (n + 1))
+        return _t_dist.ppf(r / (n + 1), df=df)
 
     def _fit_predict_year(self, train, test, factors, target):
-        from scipy.stats import norm
-        feats = factors + [self.LAG, self.MOM]
+        from scipy.stats import t as _t_dist
+        feats = list(factors) + [f for f in [self.LAG, self.MOM] if f not in factors]
         both = self._aug(pd.concat([train, test]), target)
         tr = both.loc[train.index].dropna(subset=feats + [target])
         te = both.loc[test.index].ffill()
@@ -1306,11 +1314,13 @@ class CopulaReg(BaseModel):
             return np.full(len(te), np.nan)
 
         n = len(tr)
+        df_est = max(4.0, n - len(feats) - 2)
+
         z_tr = np.zeros((n, len(feats)))
         for j, f in enumerate(feats):
             ref = tr[f].fillna(tr[f].mean()).values
-            z_tr[:, j] = self._normal_scores(ref, ref)
-        z_y = self._normal_scores(tr[target].values, tr[target].values)
+            z_tr[:, j] = self._t_scores(ref, ref, df_est)
+        z_y = self._t_scores(tr[target].values, tr[target].values, df_est)
 
         X_tr = np.column_stack([np.ones(n), z_tr])
         beta, _, _, _ = np.linalg.lstsq(X_tr, z_y, rcond=None)
@@ -1320,10 +1330,10 @@ class CopulaReg(BaseModel):
         for j, f in enumerate(feats):
             ref = tr[f].fillna(tr[f].mean()).values
             te_v = te[f].fillna(tr[f].mean()).values
-            z_te[:, j] = self._normal_scores(te_v, ref)
+            z_te[:, j] = self._t_scores(te_v, ref, df_est)
 
         z_pred = np.column_stack([np.ones(n_te), z_te]) @ beta
-        pct = norm.cdf(z_pred)
+        pct = _t_dist.cdf(z_pred, df=df_est)
         pct = np.clip(pct, 0.01, 0.99)
         y_sorted = np.sort(tr[target].values)
         return y_sorted[np.clip((pct * n).astype(int), 0, n - 1)]
@@ -1357,7 +1367,7 @@ class HuberNet(BaseModel):
         from sklearn.preprocessing import StandardScaler
 
         both = self._aug(pd.concat([train, test]), target)
-        feats = [self.LAG, self.MOM] + list(factors)
+        feats = [f for f in [self.LAG, self.MOM] if f not in factors] + list(factors)
         tr = both.loc[train.index].dropna(subset=feats + [target])
         te = both.loc[test.index]
         if len(tr) < 20:
@@ -1401,8 +1411,8 @@ class PCR(BaseModel):
         from sklearn.preprocessing import StandardScaler
 
         both = self._aug(pd.concat([train, test]), target)
-        ar_feats = [self.LAG, self.MOM]
         fac_list = list(factors)
+        ar_feats = [f for f in [self.LAG, self.MOM] if f not in fac_list]
         all_feats = ar_feats + fac_list
 
         tr = both.loc[train.index].dropna(subset=all_feats + [target])
@@ -1516,7 +1526,7 @@ class MedianElasticNet(BaseModel):
         from sklearn.preprocessing import StandardScaler
 
         both = self._aug(pd.concat([train, test]), target)
-        feats = [self.LAG, self.MOM] + list(factors)
+        feats = [f for f in [self.LAG, self.MOM] if f not in factors] + list(factors)
 
         tr = both.loc[train.index].dropna(subset=feats + [target])
         te = both.loc[test.index]

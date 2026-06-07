@@ -285,6 +285,31 @@ def spa_table(bt_dict, benchmark_name="AR(1)"):
     return pd.DataFrame(rows).set_index("model")
 
 
+def gw_test(e1, e2, h=1):
+    """Giacomini-White test: regress loss diff on constant + lagged loss diff.
+    Tests conditional predictability (time-varying forecast ability).
+    H0: no conditional predictability improvement of e1 over e2."""
+    from scipy import stats
+    d = e1**2 - e2**2
+    d = d.dropna()
+    n = len(d)
+    if n < 10:
+        return float("nan"), float("nan")
+    d_lag = d.shift(h).dropna()
+    d_curr = d.iloc[h:]
+    X = np.column_stack([np.ones(len(d_lag)), d_lag])
+    # OLS
+    XtX_inv = np.linalg.pinv(X.T @ X)
+    beta = XtX_inv @ X.T @ d_curr.values
+    resid = d_curr.values - X @ beta
+    s2 = resid @ resid / (n - 2)
+    V = s2 * XtX_inv
+    # Wald stat (joint test on both coefficients)
+    W = beta @ np.linalg.pinv(V) @ beta
+    p = 1 - stats.chi2.cdf(W, df=2)
+    return float(W), float(p)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # REGIME-MODEL-COMBINE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +338,37 @@ def _regime_labels_hmm(series, k=2):
         return pd.Series([f"r{1 if st == hi else 0}" for st in states], index=s.index)
     except Exception:
         return pd.Series(np.where(s > s.mean(), "r1", "r0"), index=s.index)
+
+
+def _regime_labels_hmm_recursive(series, k=2, min_fit=60):
+    """Fit HMM on train<yr, forward-filter with fixed params on train+test. No lookahead."""
+    from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+    labels = pd.Series(index=series.index, dtype=int)
+    dates = series.index
+    years = sorted(series.index.year.unique())
+    for yr in years:
+        train_mask = dates.year < yr
+        if train_mask.sum() < min_fit:
+            labels[dates.year == yr] = 0
+            continue
+        train = series[train_mask].dropna()
+        if len(train) < min_fit:
+            labels[dates.year == yr] = 0
+            continue
+        try:
+            res = MarkovRegression(train, k_regimes=k, trend="c", switching_variance=True).fit(disp=False)
+            # forward-filter with FIXED training params — no lookahead into test year
+            eval_series = series[dates.year <= yr].dropna()
+            res2 = MarkovRegression(eval_series, k_regimes=k, trend="c",
+                                    switching_variance=True).filter(res.params)
+            fp = np.asarray(res2.filtered_marginal_probabilities)
+            fp = fp if fp.shape[1] == k else fp.T   # ensure (nobs, k)
+            eval_mask = eval_series.index.year == yr
+            yr_labels = fp[eval_mask].argmax(axis=1)
+            labels[dates.year == yr] = yr_labels
+        except Exception:
+            labels[dates.year == yr] = 0
+    return labels
 
 
 def _regime_labels_lstar(df, factors, target):
@@ -423,7 +479,7 @@ def regime_model_combine(df, factors, target, models, start_year=2015,
         # ── compute causal regime labels ──────────────────────────────────
         try:
             if method == "hmm":
-                labels = _regime_labels_hmm(series, k=2)
+                labels = _regime_labels_hmm_recursive(series, k=2)
             elif method == "lstar":
                 labels = _regime_labels_lstar(df, factors, target)
             elif method == "dfm":
@@ -659,6 +715,25 @@ def print_rmc_results(rmc_results, bt_dict):
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
+def subsample_rmse(bt_dict, periods):
+    """Compute RMSE for each model over each sub-period.
+    periods: list of (label, year_start, year_end) tuples."""
+    rows = []
+    for name, bt in bt_dict.items():
+        row = {"model": name}
+        for label, y0, y1 in periods:
+            if bt is None or len(bt) == 0:
+                row[label] = float("nan")
+                continue
+            sub = bt[(bt.index.year >= y0) & (bt.index.year <= y1)]
+            if len(sub) >= 6:
+                row[label] = float(np.sqrt(((sub["actual"] - sub["pred"])**2).mean()))
+            else:
+                row[label] = float("nan")
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("model")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start",      type=int, default=2015, help="first backtest year")
@@ -702,6 +777,9 @@ def main():
 
     # ── apply publication lags (mixed-frequency discipline) ─────────────────
     df = F.apply_publication_lags(df_raw, live_facs)
+    df["cpi_3m_chg"] = df[target].shift(1).diff(3)
+    if "cpi_3m_chg" not in live_facs:
+        live_facs = live_facs + ["cpi_3m_chg"]
     print(f"  Matrix (raw):       {df_raw.index.min().date()} → {df_raw.index.max().date()} "
           f"({len(df_raw)} months, {len(live_facs)} live factors)")
     print(f"  Matrix (pub-laged): {df.dropna(how='all').index.min().date()} → "
@@ -772,7 +850,10 @@ def main():
             print(f"  {n:<18}n={len(bt):3d}  RMSE={rmse:.3f}")
 
     # ── SPA (preliminary, needed to build superstar set) ────────────────────
-    spa_prelim = spa_table(bt_dict, benchmark_name="AR(1)")
+    selection_end = (args.start + args.end) // 2
+    bt_dict_sel = {k: v[v.index.year <= selection_end] for k, v in bt_dict.items()
+                   if v is not None and len(v) > 0}
+    spa_prelim = spa_table(bt_dict_sel, benchmark_name="AR(1)")
 
     # ── superstar combined ───────────────────────────────────────────────────
     if not spa_prelim.empty:
@@ -812,11 +893,39 @@ def main():
     mdf = pd.DataFrame(metrics).set_index("model").sort_values("rmse")
     if ar1_r is not None:
         mdf["beats_ar1"] = mdf["rmse"] < ar1_r
+    # add Giacomini-White conditional predictability test columns
+    if bt_dict.get("AR(1)") is not None and len(bt_dict["AR(1)"]) > 0:
+        bench_gw = bt_dict["AR(1)"]
+        gw_stats, gw_ps = {}, {}
+        for name, bt in bt_dict.items():
+            if bt is None or len(bt) == 0:
+                gw_stats[name] = float("nan")
+                gw_ps[name]    = float("nan")
+                continue
+            common = bench_gw.index.intersection(bt.index)
+            if len(common) < 10:
+                gw_stats[name] = float("nan")
+                gw_ps[name]    = float("nan")
+                continue
+            e_bench = bench_gw.loc[common, "actual"] - bench_gw.loc[common, "pred"]
+            e_model = bt.loc[common, "actual"] - bt.loc[common, "pred"]
+            w, p = gw_test(e_bench, e_model)
+            gw_stats[name] = round(w, 3) if not np.isnan(w) else float("nan")
+            gw_ps[name]    = round(p, 3) if not np.isnan(p) else float("nan")
+        mdf["gw_stat"] = pd.Series(gw_stats)
+        mdf["gw_p"]    = pd.Series(gw_ps)
     cols = ["rmse", "mae", "dir_acc", "beats_ar1", "mz_slope", "mz_intercept",
-            "error_var", "mape", "bias", "n"]
+            "error_var", "mape", "bias", "gw_stat", "gw_p", "n"]
     print_cols = [c for c in cols if c in mdf.columns]
     print(mdf[print_cols].to_string(
         float_format=lambda x: f"{x:8.3f}" if isinstance(x, float) else str(x)))
+
+    # ── SUBSAMPLE RMSE ───────────────────────────────────────────────────────
+    sub_periods = [("2015-19", 2015, 2019), ("2020-21", 2020, 2021),
+                   ("2022-23", 2022, 2023), ("2024+", 2024, 2099)]
+    sub_df = subsample_rmse(bt_dict, sub_periods)
+    print("\n── Subsample RMSE ──")
+    print(sub_df.sort_values("2015-19").to_string())
 
     # ── DM / SPA TABLE ──────────────────────────────────────────────────────
     print("\n" + "═"*60)
@@ -960,6 +1069,12 @@ def main():
         except Exception:
             nowcast_rows.append(dict(model=m.name, nowcast=np.nan, date="error"))
     nc_df = pd.DataFrame(nowcast_rows).set_index("model")
+    # nowcast_lo/hi = nowcast ± model RMSE
+    if "rmse" in mdf.columns:
+        nc_df = nc_df.join(mdf[["rmse"]].rename(columns={"rmse": "model_rmse"}), how="left")
+        nc_df["nowcast_lo"] = nc_df["nowcast"] - nc_df["model_rmse"]
+        nc_df["nowcast_hi"] = nc_df["nowcast"] + nc_df["model_rmse"]
+        nc_df = nc_df.drop(columns=["model_rmse"])
     print(nc_df.to_string())
     p = os.path.join(_DATA, "nowcast_cpi_nowcast.csv")
     nc_df.to_csv(p)

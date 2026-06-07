@@ -295,6 +295,12 @@ def _apply_transform(s, kind):
     raise ValueError(f"unknown transform {kind}")
 
 
+def _gbp_eur():
+    gbp = _fred("DEXUSUK")                              # USD per GBP
+    eur = _fred("DEXUSEU").reindex(gbp.index).ffill()  # USD per EUR, aligned
+    return (gbp / eur).dropna()                         # EUR per GBP cross-rate
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTRY
 # ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +319,13 @@ REGISTRY = {
         transform="level", pub_lag=1, candidate=False, csv="cpi_yoy_long.csv",
         note="UK CPI YoY 1956+: OECD GBRCPIALLMINMEI spliced with ONS D7G7 (1989+). "
              "For extended training. Use --target cpi_yoy_long with --train-from 1956."),
+    "cpi_3m_chg": dict(
+        fetch=None, transform="level", pub_lag=0, candidate=True, csv="cpi_3m_chg.csv",
+        note="3-month change in lagged CPI YoY: target.shift(1).diff(3). "
+             "Computed in main.py from the target column; pub_lag=0 (uses cpi_yoy T-1 to T-4, "
+             "all released before CPI(T)). Candidate=True: subject to SHAP screening so it "
+             "can be dropped if it adds no signal beyond oil_brent/gas_eu. "
+             "Drop data/cpi_3m_chg.csv to override."),
 
     # ── core live factors: pub_lag=0 (financial, available before CPI release) ──
     "oil_brent": dict(
@@ -384,10 +397,7 @@ REGISTRY = {
     # offsetting signals. GBP/EUR isolates the Europe-UK trade channel which
     # directly sets import prices for ~40% of UK goods trade.
     "gbp_eur": dict(
-        fetch=lambda: (
-            _fred("DEXUSUK") / _fred("DEXUSEU").reindex(
-                _fred("DEXUSUK").index, method="ffill")
-        ),
+        fetch=_gbp_eur,
         transform="logret", pub_lag=0, candidate=True, csv="gbp_eur.csv",
         note="GBP/EUR cross-rate (FRED DEXUSUK / DEXUSEU, EUR per GBP). 1999+. "
              "pub_lag=0: daily market rate. Isolates Europe↔UK import price channel "
@@ -615,15 +625,14 @@ REGISTRY = {
              "(download from: https://www.gov.uk/government/collections/"
              "uk-house-price-index-reports)."),
     "uk_paye": dict(
-        fetch=lambda: _ons_timeseries(
-            "KAB9",
-            "employmentandlabourmarket/peopleinwork/earningsandworkinghours"
-        ),
+        fetch=None,
         transform="yoy", pub_lag=1, candidate=True, csv="uk_paye.csv",
-        note="ONS AWE: Whole Economy weekly pay, SA level (£) — series KAB9 via "
-             "ONS website JSON API. YoY transform gives wage growth %. "
-             "pub_lag=1: AWE released ~5-6 weeks after reference month. 2000+. "
-             "Falls back to data/uk_paye.csv [date, value=YoY%]."),
+        note="HMRC RTI payroll count data (employees on payroll, monthly). "
+             "No fetch function: RTI data is not available via a free public API. "
+             "NOTE: KAB9 (ONS AWE whole economy weekly pay) is NOT this series — "
+             "KAB9 is average weekly earnings and is used for uk_awg. "
+             "uk_paye is a placeholder until HMRC RTI API access is added. "
+             "Drop data/uk_paye.csv [date, value=payroll count or YoY%]."),
 
     # ── UK CPI components: pub_lag=1 (released same day as headline CPI) ────
     "uk_cpih": dict(
