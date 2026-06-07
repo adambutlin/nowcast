@@ -319,11 +319,18 @@ def _nominal_uk_hp():
     The CSV drop-in (data/uk_house_prices.csv) with ONS nominal HPI takes
     priority over this fetch — download from gov.uk UK House Price Index.
     """
-    real_hp  = _fred("QGBR628BIS").resample("ME").ffill()   # BIS real, quarterly→monthly
-    cpi_lvl  = _fred("GBRCPIALLMINMEI")                      # UK CPI level (2015=100)
-    combined = pd.concat([real_hp.rename("hp"),
-                          cpi_lvl.rename("cpi")], axis=1).dropna()
-    return (combined["hp"] * combined["cpi"] / 100).rename("uk_house_prices")
+    real_hp  = _fred("QGBR628BIS")                 # quarterly: Mar/Jun/Sep/Dec ME
+    cpi_lvl  = _fred("GBRCPIALLMINMEI")             # monthly ME
+    # Build a full monthly index spanning both series
+    monthly_idx = pd.date_range(
+        start=min(real_hp.index[0], cpi_lvl.index[0]),
+        end=max(real_hp.index[-1], cpi_lvl.index[-1]),
+        freq="ME",
+    )
+    # ffill quarterly HP across all months (Q value valid until next update)
+    hp_m  = real_hp.reindex(monthly_idx).ffill()
+    cpi_m = cpi_lvl.reindex(monthly_idx).ffill()
+    return (hp_m * cpi_m / 100).dropna()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
