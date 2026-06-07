@@ -75,14 +75,15 @@ class TestRollingWindow(unittest.TestCase):
 class TestAllModels(unittest.TestCase):
     def test_all_models_count(self):
         models = Z.all_models()
-        self.assertEqual(len(models), 14)  # 8 dead models moved to experimental_models()
+        self.assertEqual(len(models), 13)  # RegimeEns moved to experimental (2020-21 blowup)
 
     def test_experimental_models_exist(self):
         exp = Z.experimental_models()
-        self.assertEqual(len(exp), 8)
+        self.assertEqual(len(exp), 9)
         names = {m.name for m in exp}
         self.assertIn("RAMM-LGBM", names)
         self.assertIn("HMM", names)
+        self.assertIn("RegimeEns", names)
 
     def test_windowed_models(self):
         models = Z.all_models()
