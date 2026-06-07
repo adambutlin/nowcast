@@ -1,14 +1,13 @@
 """
 nowcast_cpi.py — full model comparison and nowcast for UK CPI YoY.
 
-Runs all 10 models + ensembles (MIDAS removed), reports:
-  1. Metrics table   : RMSE, MAE, DirAcc, Error Variance, MAPE, Bias, n
-  2. DM / SPA table  : DM stat + p-value vs AR(1) baseline for each model
+Runs all 22 models + ensembles, reports:
+  1. Metrics table   : RMSE, MAE, DirAcc, MZ slope/intercept, Error Variance, MAPE, Bias, n
+  2. DM / SPA table  : HLN-corrected DM stat + p-value vs AR(1) baseline for each model
   3. Error correlation matrix + greedy uncorrelated subset (Spearman ρ<0.5)
-  4. Leakage probe   : uk_rents lag-0 vs lag-1 vs excluded RMSE comparison
-  5. Regimes table   : which regimes each model identifies (current state)
-  6. Factor importance: top-5 factors per model with importance values
-  7. Regime-model-combine: train models per regime, metamodel vs model-regime-combine
+  4. Regimes table   : which regimes each model identifies (current state)
+  5. Factor importance: top-5 factors per model with importance values
+  6. Regime-model-combine: train models per regime, metamodel vs model-regime-combine
 
 Combined models (post-processing, no double-fit):
   Combined-Static    : equal-weight average of all 10 models
@@ -813,7 +812,8 @@ def main():
     mdf = pd.DataFrame(metrics).set_index("model").sort_values("rmse")
     if ar1_r is not None:
         mdf["beats_ar1"] = mdf["rmse"] < ar1_r
-    cols = ["rmse", "mae", "dir_acc", "beats_ar1", "error_var", "mape", "bias", "n"]
+    cols = ["rmse", "mae", "dir_acc", "beats_ar1", "mz_slope", "mz_intercept",
+            "error_var", "mape", "bias", "n"]
     print_cols = [c for c in cols if c in mdf.columns]
     print(mdf[print_cols].to_string(
         float_format=lambda x: f"{x:8.3f}" if isinstance(x, float) else str(x)))

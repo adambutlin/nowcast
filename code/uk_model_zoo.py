@@ -1092,7 +1092,7 @@ class GBM(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 11. ELASTICNET
+# 12. ELASTICNET
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ElasticNet(BaseModel):
@@ -1484,7 +1484,7 @@ class RegimeEnsemble(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 15. MEDIAN REGRESSION  (quantile regression at 0.5)
+# 19. MEDIAN REGRESSION  (quantile regression at 0.5)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MedianElasticNet(BaseModel):
@@ -1537,8 +1537,7 @@ class MedianElasticNet(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-# 18. SARIMAX
+# 20. SARIMAX
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SARIMAX_Model(BaseModel):
@@ -1607,7 +1606,7 @@ class SARIMAX_Model(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 19. REDUCED-FORM VAR
+# 21. REDUCED-FORM VAR
 # ─────────────────────────────────────────────────────────────────────────────
 
 class VAR_Model(BaseModel):
@@ -1665,7 +1664,7 @@ class VAR_Model(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 20. AUTO-ARIMA (BIC-selected lag order)
+# 22. AUTO-ARIMA (BIC-selected lag order)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AutoARIMA(BaseModel):
@@ -1703,13 +1702,13 @@ class AutoARIMA(BaseModel):
         if best_fit is None:
             return np.full(len(test), np.nan)
 
-        # 1-step-ahead loop: append realized obs each month to keep forecasts causal
+        # 1-step-ahead loop: re-filter with FIXED training params (same as SARIMAX approach).
+        # .filter() propagates state with fixed params → O(T) per step, not O(T²).
         preds = []
         hist = list(y_tr.values)
         for idx in test.index:
             try:
-                cur = sm.tsa.ARIMA(np.array(hist), order=best_order).fit(
-                    method="statespace", disp=False)
+                cur = sm.tsa.ARIMA(np.array(hist), order=best_order).filter(best_fit.params)
                 fc = cur.forecast(steps=1)
                 preds.append(float(np.asarray(fc)[0]))
             except Exception:
@@ -1732,8 +1731,9 @@ class DFM2(DFM):
 
 def dm_test(e1, e2, h=1):
     """
-    Diebold-Mariano test (1995). H0: equal MSE. Sign: DM > 0 means model2 better.
-    Returns (DM stat, two-sided p-value).
+    Diebold-Mariano test (1995) with Harvey-Leybourne-Newbold (1997) finite-sample
+    correction. H0: equal MSE. DM > 0 means model2 better.
+    Returns (HLN-corrected DM stat, two-sided p-value from t(n-1)).
     e1, e2: arrays of forecast errors (not squared) for model1 and model2.
     """
     from scipy import stats
@@ -1747,33 +1747,48 @@ def dm_test(e1, e2, h=1):
         acov += (1 - j / (h + 1)) * np.mean((d[j:] - dbar) * (d[:n - j] - dbar))
     V = max((gamma0 + 2 * acov) / n, 1e-12)
     DM = dbar / np.sqrt(V)
-    p  = 2 * (1 - stats.norm.cdf(abs(DM)))
-    return float(DM), float(p)
+    # HLN finite-sample correction: scale DM, use t(n-1) instead of N(0,1)
+    hln_scale = np.sqrt(max((n + 1 - 2 * h + h * (h - 1) / n) / n, 1e-12))
+    DM_hln = DM * hln_scale
+    p = 2 * (1 - stats.t.cdf(abs(DM_hln), df=n - 1))
+    return float(DM_hln), float(p)
 
 
 def score_backtest(bt, name="model"):
     """
     Full scoring for a backtest DataFrame with columns [actual, pred].
-    Returns dict: rmse, mae, dir_acc, error_var, mape, bias.
+    Returns dict: rmse, mae, dir_acc, error_var, mape, bias, mz_slope, mz_intercept, n.
+
+    mz_slope / mz_intercept: Mincer-Zarnowitz efficiency test (OLS of actual on pred).
+    Efficient forecast → intercept ≈ 0, slope ≈ 1. Deviation indicates bias or inefficiency.
     """
     if bt is None or len(bt) == 0:
         return dict(model=name, rmse=np.nan, mae=np.nan, dir_acc=np.nan,
-                    error_var=np.nan, mape=np.nan, bias=np.nan, n=0)
+                    error_var=np.nan, mape=np.nan, bias=np.nan,
+                    mz_slope=np.nan, mz_intercept=np.nan, n=0)
     e = bt["actual"] - bt["pred"]
     abs_pct = np.abs(e / bt["actual"].replace(0, np.nan)) * 100
     # Directional accuracy: did we correctly predict month-over-month direction of change?
     actual_chg = bt["actual"].diff()
     pred_chg   = (bt["pred"] - bt["actual"].shift(1))
     dir_mask   = (np.sign(actual_chg) == np.sign(pred_chg)).dropna()
+    # Mincer-Zarnowitz: regress actual on (const, pred); efficient → intercept=0, slope=1
+    try:
+        from scipy.stats import linregress as _lr
+        mz_slope, mz_intercept, _, _, _ = _lr(bt["pred"].values, bt["actual"].values)
+    except Exception:
+        mz_slope, mz_intercept = np.nan, np.nan
     return dict(
-        model     = name,
-        rmse      = float(np.sqrt((e**2).mean())),
-        mae       = float(e.abs().mean()),
-        dir_acc   = float(dir_mask.mean() * 100) if len(dir_mask) else np.nan,
-        error_var = float(e.var()),
-        mape      = float(abs_pct.mean()),
-        bias      = float(e.mean()),
-        n         = len(bt),
+        model        = name,
+        rmse         = float(np.sqrt((e**2).mean())),
+        mae          = float(e.abs().mean()),
+        dir_acc      = float(dir_mask.mean() * 100) if len(dir_mask) else np.nan,
+        error_var    = float(e.var()),
+        mape         = float(abs_pct.mean()),
+        bias         = float(e.mean()),
+        mz_slope     = float(mz_slope),
+        mz_intercept = float(mz_intercept),
+        n            = len(bt),
     )
 
 

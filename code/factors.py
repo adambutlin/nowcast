@@ -450,14 +450,13 @@ REGISTRY = {
     # import→PPI→CPI channel. IMF composite index not available on FRED;
     # metals_index computed as equal-weight average log-return across 5 metals.
     "metals_index": dict(
-        fetch=lambda: (
-            np.log(_fred("PCOPPUSDM")).diff()
-            .add(np.log(_fred("PALUMUSDM")).diff(), fill_value=np.nan)
-            .add(np.log(_fred("PNICKUSDM")).diff(), fill_value=np.nan)
-            .add(np.log(_fred("PZINCUSDM")).diff(), fill_value=np.nan)
-            .add(np.log(_fred("PIORECRUSDM")).diff(), fill_value=np.nan)
-            .div(5)
-        ),
+        fetch=lambda: pd.concat([
+            np.log(_fred("PCOPPUSDM")).diff(),
+            np.log(_fred("PALUMUSDM")).diff(),
+            np.log(_fred("PNICKUSDM")).diff(),
+            np.log(_fred("PZINCUSDM")).diff(),
+            np.log(_fred("PIORECRUSDM")).diff(),
+        ], axis=1).mean(axis=1, skipna=True),
         transform="level", pub_lag=0, candidate=True, csv="metals_index.csv",
         note="Equal-weight avg log-return: copper, aluminium, nickel, zinc, iron ore "
              "(FRED PCOPPUSDM/PALUMUSDM/PNICKUSDM/PZINCUSDM/PIORECRUSDM). 1992+. "
