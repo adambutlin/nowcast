@@ -69,10 +69,13 @@ RMC-hmm (recursive HMM labels, fixed params, no refit)
 | uk_monthly_gdp      | 1       | yoy       | FRED         | GBRPROINDMISMEI (OECD industrial prod)   |
 | uk_awg              | 1       | yoy       | ONS KAB9     | AWE whole economy weekly pay YoY%        |
 | uk_vacancies        | 1       | logret    | dbnomics     | ONS AP2Y vacancies                       |
-| uk_house_prices     | 2       | yoy       | FRED         | QGBR628BIS (BIS quarterly, ffill→monthly)|
+| uk_house_prices     | 2       | yoy       | FRED         | QGBR628BIS real×CPI_level/100 → nominal (see note below) |
+| uk_retail_sales     | 1       | level     | FRED         | GBRSLRTTO01GYSAM, UK Retail Sales Volume YoY SA (demand/profit proxy) |
 | cpi_3m_chg          | 0       | level     | derived      | 3m diff of cpi_yoy shifted 1m (post-lag) |
 
 Plus 7 SHAP-derived volatility/momentum factors (oil_vol_6m, gbpusd_vol_6m, oil_brent_3m, gbpusd_3m already listed).
+
+**uk_house_prices note (2026-06-07 fix):** QGBR628BIS is the BIS CPI-deflated real house price index. Using it directly created mechanical negative correlation (YoY_real ≈ YoY_nominal − CPI_yoy → r=−0.613 circular). Fixed to nominal: `nominal_idx = real × GBRCPIALLMINMEI / 100`, explicit monthly reindex before ffill (quarterly→monthly interpolation). Post-fix r=−0.320 (genuine BoE tightening channel).
 
 **Excluded from runs:**
 - `gas_eu_3m` — ablation shows Δ RMSE +0.024 (noise); `gas_eu` alone better
@@ -209,8 +212,41 @@ fredapi, yfinance, dbnomics, pandas, numpy, scipy, requests, openpyxl, certifi
 
 ---
 
+## Forward Factor Sweep — Results (k=1..10, pre-uk_retail_sales, 2026-06-07)
+
+*Run before uk_retail_sales added. SHAP ranking on 27 candidates (276 pre-2015 obs). AR(1) baseline RMSE=0.4946.*
+
+**SHAP ranking (pre-2015, 31 live factors):**
+1. uk_house_prices 0.532 | 2. cpi_3m_chg 0.282 | 3. uk_monthly_gdp 0.170 | 4. semiconductors_ppi 0.097 | 5. oil_vol_6m 0.076
+
+| k | Factor added        | Best model    | Best RMSE | Beats AR1 |
+|---|---------------------|---------------|-----------|-----------|
+| 1 | uk_house_prices     | AutoARIMA     | 0.4482    | ✓         |
+| 2 | cpi_3m_chg          | TVP           | 0.4540    | ✓         |
+| 3 | uk_monthly_gdp      | TVP           | 0.4619    | ✓         |
+| 4 | semiconductors_ppi  | TVP           | 0.4526    | ✓         |
+| 5 | oil_vol_6m          | TVP           | 0.4551    | ✓         |
+| 6 | gbpusd_vol_6m       | TVP           | 0.4582    | ✓         |
+| 7 | copper_price        | TVP           | 0.4602    | ✓         |
+| 8 | uk_awg              | TVP           | 0.4607    | ✓         |
+| 9 | food_price_index    | TVP           | 0.4621    | ✓         |
+|10 | nickel_price        | TVP           | 0.4670    | ✓         |
+
+**Key finding:** k=1 (uk_house_prices alone) gives global best individual RMSE=0.4482 (AutoARIMA). Adding factors monotonically degrades best-model RMSE k=2..10. TVP most robust to additional noisy factors.
+
+**Optimal k per model (pre-retail-sales):**
+AutoARIMA k=1 (0.4482), TVP k=1 (0.4505), UCM k=1 (0.4584), DFM k=1 (0.4836), DFM-k2 k=3 (0.4756), ElasticNet k=2 (0.4736), SARIMAX k=2 (0.4685), PCR k=9 (0.4714), HuberNet k=9 (0.4669)
+
+**New SHAP ranking with uk_retail_sales (32 factors, 2026-06-07):**
+1. uk_house_prices 0.406 | 2. uk_retail_sales 0.299 | 3. cpi_3m_chg 0.243 | 4. uk_monthly_gdp 0.096 | 5. uk_awg 0.053 | gas_eu/veg_oil/iron_ore → SHAP=0
+
+**Planned:** sparse k-point sweep at k=1,2,5,10,32 with uk_retail_sales included.
+
+---
+
 ## Deferred Work
 
+- **Sparse k sweep:** run `sweep_factors.py --k-points 1 2 5 10 32` with uk_retail_sales to confirm double-descent hypothesis and optimal k
 - **Priority 3:** Bias correction — rolling 12-month mean-error correction for post-energy-shock compression bias (all MZ slopes ~0.5-0.6 in 2025)
 - **Priority 4:** Regularize SHAP threshold via cross-validation (currently fixed at default)
 - **Priority 5:** Extend training data as 2025 data accumulates

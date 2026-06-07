@@ -940,3 +940,91 @@ FRED_API_KEY=<key> .venv/bin/python -W ignore code/main.py --start 2015 --end 20
 **CAVEMAN MODE** active (full level) — fragments OK, drop filler/articles.
 
 ---
+---
+
+## Handoff: 2026-06-07T13:53:23Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: auto
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/65b6c120-cad7-4be6-9a13-fac8a165c303.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+(unavailable)
+
+### Git Snapshot
+- Branch: main
+- Status:
+ M docs/handoff/HANDOFF.md
+?? ".venv 2"
+?? logs/
+- Recent commits:
+a5fb7b5 feat: uk_retail_sales factor + ensemble models in sweep + extend to k=20
+33d738a fix: _nominal_uk_hp explicit monthly reindex before ffill
+24a17fe fix: uk_house_prices now nominal (real×CPI_level); sweep --max-k flag
+4ec5365 feat: forward factor sweep script + flag uk_house_prices real/nominal issue
+78d41a3 docs: fill HANDOFF.md 2026-06-07T12:47:45Z entry with real session summary
+
+### Model Summary
+- **uk_house_prices real→nominal fix**: QGBR628BIS is CPI-deflated real index → YoY_real ≈ YoY_nominal − CPI_yoy → mechanical circular negative correlation r=−0.613. Fixed: `_nominal_uk_hp()` reconstructs nominal via `real × GBRCPIALLMINMEI / 100` with explicit monthly reindex+ffill before multiplication. Post-fix r=−0.320 (genuine BoE channel). Commit 33d738a.
+- **uk_retail_sales added**: FRED GBRSLRTTO01GYSAM, UK Retail Sales Volume YoY SA, pub_lag=1, candidate=True. Immediately SHAP #2 (0.299) in 32-factor pre-2015 ranking behind uk_house_prices (0.406). Best available profit/demand proxy (UK PMI not free on FRED). Commit a5fb7b5.
+- **sweep_factors.py ensemble support**: Added Combined-Static, Combined-Dynamic, Combined-Absolute to sweep. Reuses bt_dict_k from base model loop (no duplicate backtest passes). k=1 run confirms AutoARIMA 0.4482 global best; ensembles add ~0.01 RMSE overhead vs best individual at k=1.
+- **sweep_factors.py default max-k=20**: extended for double-descent investigation. User killed two partial sweeps (one after nominal HP fix at k=1, one after uk_retail_sales addition at k=1).
+- **k=1..10 sweep results** (pre-retail-sales, 31 factors): k=1 global best AutoARIMA 0.4482. Performance monotonically degrades k=2..10; TVP most stable. Optimal k per model: AutoARIMA/TVP/UCM/DFM all k=1; PCR/HuberNet k=9 (benefit from regularization).
+- **New SHAP ranking with 32 factors**: hp #1 (0.406), retail_sales #2 (0.299), cpi_3m_chg #3 (0.243), gdp #4 (0.096); gas_eu/veg_oil/iron_ore SHAP=0 (no pre-2015 signal).
+- **sweep sparse k-points**: added `--k-points` arg to sweep_factors.py; accepts space-separated ints, only runs backtests at those k values. Enables fast double-descent probe at k=1,2,5,10,32 instead of every k.
+- **docs updated**: STATE.md factor table updated (nominal HP note, uk_retail_sales row); k=1..10 sweep results table; new SHAP ranking; deferred work updated. HANDOFF.md this entry.
+- **16 unit tests still pass**. All commits on main.
+
+### Handoff Context (paste into next session)
+**State:** nominal HP fix + uk_retail_sales added + sweep sparse-k support. Docs current. 16 tests pass.
+
+**Run sparse sweep (FRED key required):**
+```bash
+cd /Users/Adam/Documents/home/quant/nowcast
+FRED_API_KEY=<key> .venv/bin/python -W ignore code/sweep_factors.py \
+  --start 2015 --end 2024 --train-from 1992 \
+  --k-points 1 2 5 10 32 \
+  --output logs/sweep_sparse.csv 2>&1 | tee logs/sweep_sparse.log
+```
+
+**Run full backtest:**
+```bash
+FRED_API_KEY=<key> .venv/bin/python -W ignore code/main.py \
+  --start 2015 --end 2024 --train-from 1992 --shap-screen 2>&1 | tee logs/run.log
+```
+
+**Key results (38-factor 2015-2024 OOS, authoritative):** Combined-Dynamic RMSE=0.453, AR(1)=0.495. k=1 sweep best=0.4482 AutoARIMA (uk_house_prices only). Double-descent: performance degrades k=2..10; k>10 unknown.
+
+**New factors since last full backtest:** uk_retail_sales (#2 SHAP), uk_house_prices now nominal. Full backtest with these not yet run.
+
+**CAVEMAN MODE** active (full level).
+
+---
+
+## Handoff: 2026-06-07T14:XX:XXZ (current session)
+
+### Git Snapshot
+- Branch: main
+- Recent commits: a5fb7b5 (uk_retail_sales + ensemble sweep + k=20)
+
+### Model Summary
+- **sweep_factors.py `--k-points`**: added sparse checkpoint arg; only runs backtests at specified k values (e.g. 1 2 5 10 32 instead of every k from 1..max). Loop now iterates `enumerate(k_values, 1)` not `range(1, n_steps+1)`. Progress bar uses step_idx/n_steps. `--max-k` now caps SHAP ranking (default None = all candidates).
+- **STATE.md**: added uk_retail_sales row to factor table; uk_house_prices note on real→nominal fix; k=1..10 sweep results table; new SHAP ranking with uk_retail_sales; deferred work updated with sparse sweep run command.
+- **HANDOFF.md**: filled 2026-06-07T13:53:23Z TODO sections with session summary; added this entry.
+
+### Handoff Context
+Docs and code current. Run sparse sweep command above as next step.
+
+**Deferred work (priority order):**
+1. Run sparse k sweep: `--k-points 1 2 5 10 32` with FRED key
+2. Bias correction for MZ slope compression
+3. Regularize SHAP threshold via CV
+4. Option B OOS pseudo-vintage cutoffs
+5. RegimeEns 2020-21 blowup investigation
+
+---

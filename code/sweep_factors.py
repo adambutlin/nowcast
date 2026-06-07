@@ -54,8 +54,11 @@ def main():
     ap.add_argument("--end",        type=int, default=2024)
     ap.add_argument("--train-from", type=int, default=1992)
     ap.add_argument("--target",     default="cpi_yoy")
-    ap.add_argument("--max-k",      type=int, default=20,
-                    help="stop sweep after this many factors (default: 20 for double-descent)")
+    ap.add_argument("--max-k",      type=int, default=None,
+                    help="cap SHAP ranking at this many factors (default: all candidates)")
+    ap.add_argument("--k-points",   type=int, nargs="+", default=None,
+                    help="specific k values to test instead of every 1..max-k "
+                         "(e.g. --k-points 1 2 5 10 32). faster sparse checkpoints.")
     ap.add_argument("--output",     default="logs/sweep_factors.csv")
     args = ap.parse_args()
 
@@ -101,6 +104,14 @@ def main():
         ranked = ranked[: args.max_k]
         print(f"  (capped at k={args.max_k})")
 
+    # ── determine which k values to test ────────────────────────────────────
+    n_factors = len(ranked)
+    if args.k_points is not None:
+        k_values = sorted(set(min(k, n_factors) for k in args.k_points if k >= 1))
+        print(f"\nSparse checkpoints: k={k_values}  (from --k-points)")
+    else:
+        k_values = list(range(1, n_factors + 1))
+
     # ── AR(1) baseline ──────────────────────────────────────────────────────
     bt_ar1   = NC.ar1_backtest(df, target, start_year=args.start, end_year=args.end)
     ar1_rmse = float(np.sqrt(((bt_ar1["actual"] - bt_ar1["pred"]) ** 2).mean()))
@@ -114,24 +125,23 @@ def main():
     # ── sweep ───────────────────────────────────────────────────────────────
     models   = Z.all_models()
     results  = []
-    n_steps  = len(ranked)
+    n_steps  = len(k_values)
     t_start  = time.time()
 
-    def _bar(k, n, width=40):
+    def _bar(step_idx, n, width=40):
         """Return a compact progress bar string."""
-        filled   = int(width * k / n)
+        filled   = int(width * step_idx / n)
         bar      = "█" * filled + "░" * (width - filled)
         elapsed  = time.time() - t_start
-        avg_step = elapsed / k if k else 0
-        eta      = avg_step * (n - k)
-        col      = shutil.get_terminal_size((80, 20)).columns
+        avg_step = elapsed / step_idx if step_idx else 0
+        eta      = avg_step * (n - step_idx)
         eta_str  = f"{int(eta//60)}m{int(eta%60):02d}s" if eta >= 60 else f"{eta:.0f}s"
-        return f"[{bar}] {k}/{n}  {elapsed:.0f}s elapsed  ETA {eta_str}"
+        return f"[{bar}] {step_idx}/{n}  {elapsed:.0f}s elapsed  ETA {eta_str}"
 
-    print(f"Running {n_steps} steps × {len(models)} models "
+    print(f"Running {n_steps} checkpoints × {len(models)} models "
           f"(~{n_steps * len(models)} backtests total) …\n")
 
-    for k in range(1, n_steps + 1):
+    for step_idx, k in enumerate(k_values, 1):
         facs         = ranked[:k]
         factor_added = ranked[k - 1]
         shap_score   = float(importance[factor_added])
@@ -208,7 +218,7 @@ def main():
         best_model = min(step_rmses, key=step_rmses.get) if step_rmses else "—"
         best_rmse  = step_rmses.get(best_model, float("nan"))
         elapsed    = time.time() - t0
-        bar_str    = _bar(k, n_steps)
+        bar_str    = _bar(step_idx, n_steps)
         beat       = "✓" if (step_rmses and best_rmse < ar1_rmse) else "✗"
         print(
             f"{bar_str}\n"
