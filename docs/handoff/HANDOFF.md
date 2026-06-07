@@ -890,3 +890,53 @@ FRED_API_KEY=<key> ../.venv/bin/python -W ignore main.py --start 2015 --train-fr
 - `code/tests/test_main.py` + `code/tests/conftest.py`: 15 tests
 
 ---
+---
+
+## Handoff: 2026-06-07T12:47:45Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: auto
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/65b6c120-cad7-4be6-9a13-fac8a165c303.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Git Snapshot
+- Branch: main
+- Last commit: b681427 fix: cut RegimeEns from all_models (2020-21 COVID blowup); update STATE 38-factor results
+
+### Model Summary
+- SSL certifi fix in `factors.py` module init: `REQUESTS_CA_BUNDLE`/`SSL_CERT_FILE` → 38 live factors (was 7 due to macOS SSL failure)
+- Pre-2015 SHAP screen (lookahead fix): `screen_df = df[df.index.year < args.start]`; kept 24/38 factors; gas_eu force-kept via `--always-keep`; effective rank 6.7
+- **Critical lookahead bias discovered:** prior STATE metrics (UCM=0.370) used full-sample SHAP. Corrected 38-factor OOS: UCM=0.473, Combined-Static=0.454, Combined-Dynamic=0.453 (best)
+- **All prior STATE.md metrics marked invalid.** Corrected 38-factor 2015-2024 backtest is now the authoritative source
+- Model split: `all_models()` = 13 operational (RMSE ≤1.5×AR1); `experimental_models()` = 9 (RAMM-LGBM, HMM, MS-DFM, LSTAR, HiddenRF, GBM, CopulaReg, VAR, RegimeEns)
+- RegimeEns RMSE=1.202 (2.4×AR1) in 38-factor run — catastrophic 2020-21 blowup (subsample RMSE=2.429 during COVID); moved to experimental
+- RMC string-label bug fixed: `_regime_labels_hmm_recursive` used `dtype=int` storing 0/1; RMC expected "r0"/"r1" → silently always fell back to full ensemble. Fixed: `dtype=object`, `f"r{int(v)}"` labels. RMC-hmm now RMSE=0.485 vs AR1=0.495
+- GW test dof fix: `s2 = resid @ resid / max(len(d_curr) - 2, 1)`; BH FDR correction for superstar selection; MZ joint F-test added to score_backtest(); uncertainty bands ±model_rmse; subsample RMSE CI annotation
+- 4 combined ensembles: Combined-Static/Dynamic beat AR1 with p<0.05 DM. Combined-Superstar empty (BH kills all). Combined-Absolute = HuberNet (only uncorrelated survivor)
+- 16 unit tests pass. All code in `code/`; main entry point is `code/main.py`
+
+### Handoff Context (paste into next session)
+**State:** Full 38-factor backtest complete. RegimeEns cut. STATE.md current. 16 tests pass.
+
+**Run command:**
+```bash
+cd /Users/Adam/Documents/home/quant/nowcast
+FRED_API_KEY=<key> .venv/bin/python -W ignore code/main.py --start 2015 --end 2024 --train-from 1992 --shap-screen 2>&1 | tee logs/run.log
+```
+
+**Key results (38-factor, 2015-2024 OOS):** Combined-Dynamic RMSE=0.453, Combined-Static=0.454, AR(1)=0.495. Only these two beat AR1 at p<0.05. BH FDR at 10% kills Combined-Superstar.
+
+**2024+ NaN** for all factor models — uk_house_prices (BIS quarterly) doesn't cover end-2024. 2024 subsample only valid for AR(1).
+
+**2025 blind test (7-factor run):** Combined-Absolute=0.295, AR1=0.349. All MZ slopes ~0.5-0.6 (compression bias from energy-shock training era).
+
+**Deferred work (priority order):**
+1. Bias correction: rolling 12-month mean-error correction for MZ slope compression
+2. Regularize SHAP threshold via cross-validation (currently default)
+3. Option B OOS: pseudo-OOS with 5 vintage cutoffs
+4. Investigate RegimeEns 2020-21 blowup mechanism (regime misclassification during COVID)
+5. MIDAS n=76 — why shorter coverage in 38-factor run vs 7-factor?
+
+**CAVEMAN MODE** active (full level) — fragments OK, drop filler/articles.
+
+---
