@@ -654,6 +654,14 @@ REGISTRY = {
              "CSV override (data/uk_house_prices.csv) with ONS nominal HPI takes priority "
              "(download from: https://www.gov.uk/government/collections/"
              "uk-house-price-index-reports)."),
+    "uk_retail_sales": dict(
+        fetch=lambda: _fred("GBRSLRTTO01GYSAM"),
+        transform="level", pub_lag=1, candidate=True, csv="uk_retail_sales.csv",
+        note="UK Retail Sales Volume YoY, seasonally adjusted (FRED GBRSLRTTO01GYSAM, "
+             "OECD/ONS). Monthly, ~4 weeks after reference month → pub_lag=1. "
+             "Leading demand/profit proxy: high retail volume growth signals consumer "
+             "pricing power and corporate margin expansion → leads CPI. "
+             "Preferred 'profit' indicator given absence of UK PMI on free APIs."),
     "uk_paye": dict(
         fetch=None,
         transform="yoy", pub_lag=1, candidate=True, csv="uk_paye.csv",

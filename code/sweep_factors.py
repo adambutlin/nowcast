@@ -54,8 +54,8 @@ def main():
     ap.add_argument("--end",        type=int, default=2024)
     ap.add_argument("--train-from", type=int, default=1992)
     ap.add_argument("--target",     default="cpi_yoy")
-    ap.add_argument("--max-k",      type=int, default=None,
-                    help="stop sweep after this many factors (default: all)")
+    ap.add_argument("--max-k",      type=int, default=20,
+                    help="stop sweep after this many factors (default: 20 for double-descent)")
     ap.add_argument("--output",     default="logs/sweep_factors.csv")
     args = ap.parse_args()
 
@@ -107,6 +107,10 @@ def main():
     ar1_n    = len(bt_ar1)
     print(f"\nAR(1) baseline: RMSE={ar1_rmse:.4f}  n={ar1_n}\n")
 
+    # ── import ensemble helpers from main ───────────────────────────────────
+    from main import combine_static, combine_dynamic, combine_subset, \
+                     error_corr_matrix, greedy_uncorrelated_subset
+
     # ── sweep ───────────────────────────────────────────────────────────────
     models   = Z.all_models()
     results  = []
@@ -133,7 +137,10 @@ def main():
         shap_score   = float(importance[factor_added])
         t0 = time.time()
 
+        # ── run all base models (single pass) ───────────────────────────────
         step_rmses = {}
+        bt_dict_k  = {}   # keep DataFrames for ensemble building below
+
         for m in models:
             try:
                 with warnings.catch_warnings():
@@ -142,15 +149,16 @@ def main():
                                     start_year=args.start, end_year=args.end)
                 if bt.empty or bt["pred"].isna().all():
                     continue
-                n    = int(bt["pred"].notna().sum())
-                rmse = float(np.sqrt(((bt["actual"] - bt["pred"]) ** 2).mean()))
+                n_obs = int(bt["pred"].notna().sum())
+                rmse  = float(np.sqrt(((bt["actual"] - bt["pred"]) ** 2).mean()))
                 results.append({
                     "k": k, "factor_added": factor_added,
                     "shap_score": round(shap_score, 6),
                     "model": m.name, "rmse": round(rmse, 5),
-                    "n": n, "beats_ar1": rmse < ar1_rmse,
+                    "n": n_obs, "beats_ar1": rmse < ar1_rmse,
                 })
                 step_rmses[m.name] = rmse
+                bt_dict_k[m.name]  = bt
             except Exception:
                 results.append({
                     "k": k, "factor_added": factor_added,
@@ -158,6 +166,44 @@ def main():
                     "model": m.name, "rmse": None,
                     "n": 0, "beats_ar1": False,
                 })
+
+        # ── ensemble models (reuse bt_dict_k, no second backtest pass) ──────
+        beating = {n: bt for n, bt in bt_dict_k.items()
+                   if step_rmses.get(n, float("inf")) < ar1_rmse}
+
+        for ens_name, ens_bt in [
+            ("Combined-Static",  combine_static(beating)),
+            ("Combined-Dynamic", combine_dynamic(beating, window=12)),
+        ]:
+            if ens_bt is not None and len(ens_bt) > 0:
+                rmse = float(np.sqrt(((ens_bt["actual"] - ens_bt["pred"])**2).mean()))
+                results.append({
+                    "k": k, "factor_added": factor_added,
+                    "shap_score": round(shap_score, 6),
+                    "model": ens_name, "rmse": round(rmse, 5),
+                    "n": len(ens_bt), "beats_ar1": rmse < ar1_rmse,
+                })
+                step_rmses[ens_name] = rmse
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _, corr_mat = error_corr_matrix(bt_dict_k)
+            if not corr_mat.empty:
+                uncorr = greedy_uncorrelated_subset(corr_mat, bt_dict_k,
+                                                    rho_threshold=0.5, ar1_rmse=ar1_rmse)
+                bt_abs = combine_subset(bt_dict_k, uncorr)
+                if bt_abs is not None and len(bt_abs) > 0:
+                    rmse = float(np.sqrt(((bt_abs["actual"] - bt_abs["pred"])**2).mean()))
+                    results.append({
+                        "k": k, "factor_added": factor_added,
+                        "shap_score": round(shap_score, 6),
+                        "model": "Combined-Absolute", "rmse": round(rmse, 5),
+                        "n": len(bt_abs), "beats_ar1": rmse < ar1_rmse,
+                    })
+                    step_rmses["Combined-Absolute"] = rmse
+        except Exception:
+            pass
 
         best_model = min(step_rmses, key=step_rmses.get) if step_rmses else "—"
         best_rmse  = step_rmses.get(best_model, float("nan"))
