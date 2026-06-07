@@ -1006,25 +1006,64 @@ FRED_API_KEY=<key> .venv/bin/python -W ignore code/main.py \
 
 ---
 
-## Handoff: 2026-06-07T14:XX:XXZ (current session)
+## Handoff: 2026-06-07T14:30:00Z (manual, end of session)
 
 ### Git Snapshot
 - Branch: main
-- Recent commits: a5fb7b5 (uk_retail_sales + ensemble sweep + k=20)
+- Last commit: 410da3c docs+feat: sparse k-point sweep; STATE/HANDOFF updated with session progress
+- Commits this session: 33d738a, 24a17fe, 4ec5365, a5fb7b5, 410da3c
 
 ### Model Summary
-- **sweep_factors.py `--k-points`**: added sparse checkpoint arg; only runs backtests at specified k values (e.g. 1 2 5 10 32 instead of every k from 1..max). Loop now iterates `enumerate(k_values, 1)` not `range(1, n_steps+1)`. Progress bar uses step_idx/n_steps. `--max-k` now caps SHAP ranking (default None = all candidates).
-- **STATE.md**: added uk_retail_sales row to factor table; uk_house_prices note on real→nominal fix; k=1..10 sweep results table; new SHAP ranking with uk_retail_sales; deferred work updated with sparse sweep run command.
-- **HANDOFF.md**: filled 2026-06-07T13:53:23Z TODO sections with session summary; added this entry.
+- **sweep_factors.py `--k-points`**: sparse checkpoint arg; only runs backtests at specified k values (e.g. `--k-points 1 2 5 10 32` instead of every k from 1..max). Loop iterates `enumerate(k_values, 1)`. Progress bar uses step_idx/n_steps. `--max-k` now caps SHAP ranking only (default None = all candidates). Commit 410da3c.
+- **sweep_factors.py ensemble models**: Combined-Static, Combined-Dynamic, Combined-Absolute computed at each k checkpoint; reuses bt_dict_k (no duplicate backtest passes). Commit a5fb7b5.
+- **uk_house_prices real→nominal fix**: QGBR628BIS is CPI-deflated → mechanical r=−0.613. Fixed: `_nominal_uk_hp()` reconstructs nominal via `real × GBRCPIALLMINMEI / 100`, explicit monthly reindex+ffill. Post-fix r=−0.320 (genuine signal). Commits 33d738a, 24a17fe.
+- **uk_retail_sales added**: FRED GBRSLRTTO01GYSAM, Retail Sales Volume YoY SA, pub_lag=1, candidate=True. SHAP #2 (0.299) behind uk_house_prices (0.406). Best profit/demand proxy (PMI not free on FRED). Commit a5fb7b5.
+- **k=1..10 sweep results** (pre-retail-sales, 31 factors): k=1 best=0.4482 AutoARIMA; monotonic degradation k=2..10; TVP most robust. PCR/HuberNet optimal at k=9 (regularization benefit). Full table in STATE.md.
+- **New SHAP ranking (32 factors with retail_sales)**: hp 0.406, retail_sales 0.299, cpi_3m_chg 0.243, gdp 0.096, awg 0.053; gas_eu/veg_oil/iron_ore SHAP=0.
+- **Sparse sweep running**: `sweep_factors.py --k-points 1 2 5 10 32` launched in background at session end. Output: `logs/sweep_sparse.log`, `logs/sweep_sparse.csv`.
+- **docs updated**: STATE.md (uk_retail_sales row, nominal HP note, k=1..10 results table, new SHAP ranking, deferred work); HANDOFF.md this entry. Commit 410da3c.
+- **16 unit tests pass**. All code in `code/`; entry point `code/main.py`.
 
-### Handoff Context
-Docs and code current. Run sparse sweep command above as next step.
+### Handoff Context (paste into next session)
+**State:** nominal HP fix + uk_retail_sales + sparse sweep support. All docs current. 16 tests pass. Sparse sweep may still be running (`logs/sweep_sparse.log`).
+
+**Check sweep status:**
+```bash
+tail -20 /Users/Adam/Documents/home/quant/nowcast/logs/sweep_sparse.log
+```
+
+**Run full backtest (with new factors — not yet run):**
+```bash
+cd /Users/Adam/Documents/home/quant/nowcast
+FRED_API_KEY=<key> .venv/bin/python -W ignore code/main.py \
+  --start 2015 --end 2024 --train-from 1992 --shap-screen 2>&1 | tee logs/run.log
+```
+
+**Run sparse sweep (if not already complete):**
+```bash
+FRED_API_KEY=<key> .venv/bin/python -W ignore code/sweep_factors.py \
+  --start 2015 --end 2024 --train-from 1992 \
+  --k-points 1 2 5 10 32 \
+  --output logs/sweep_sparse.csv 2>&1 | tee logs/sweep_sparse.log
+```
+
+**Key results (38-factor 2015-2024 OOS, authoritative):** Combined-Dynamic RMSE=0.453, AR(1)=0.495. k=1 sweep best=0.4482 (AutoARIMA, uk_house_prices only). New factors not yet in full backtest.
 
 **Deferred work (priority order):**
-1. Run sparse k sweep: `--k-points 1 2 5 10 32` with FRED key
-2. Bias correction for MZ slope compression
-3. Regularize SHAP threshold via CV
-4. Option B OOS pseudo-vintage cutoffs
+1. Inspect sweep_sparse.csv results; update STATE.md if double-descent found at k>10
+2. Run full backtest with uk_retail_sales + nominal HP to update authoritative RMSE table
+3. Bias correction: rolling 12-month mean-error for MZ slope compression
+4. Regularize SHAP threshold via CV
 5. RegimeEns 2020-21 blowup investigation
+
+**Key files:**
+- `code/factors.py`: nominal HP + uk_retail_sales added
+- `code/sweep_factors.py`: `--k-points` sparse checkpoints
+- `code/uk_model_zoo.py`: 13 operational + 9 experimental (RegimeEns in experimental)
+- `code/main.py`: main entry; `--shap-screen` default
+- `code/tests/test_main.py`: 16 tests
+- `logs/sweep_sparse.log`: in-progress sparse sweep
+
+**CAVEMAN MODE** active (full level).
 
 ---
