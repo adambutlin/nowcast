@@ -1,10 +1,12 @@
 .venv/
+.venv*/
 __pycache__/
 .pytest_cache/
 .DS_Store
 *.pyc
 *.pyo
 data/
+logs/
 *_backtest.csv
 *_metrics.csv
 *_spa.csv
