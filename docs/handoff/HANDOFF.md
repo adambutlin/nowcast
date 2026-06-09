@@ -1067,3 +1067,83 @@ FRED_API_KEY=<key> .venv/bin/python -W ignore code/sweep_factors.py \
 **CAVEMAN MODE** active (full level).
 
 ---
+---
+
+## Handoff: 2026-06-09T12:00:39Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: auto
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/f2562a93-8de9-4198-8f4a-a2a47ac1d22c.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+(unavailable)
+
+### Git Snapshot
+- Branch: reg-events
+- Status:
+ M .claude/settings.json
+ M docs/handoff/HANDOFF.md
+- Recent commits:
+4971859 data: UK fiscal event binary 2000-2026 (budgets, statements, off-cycle)
+ed0c2c1 data: Ofgem quarterly price cap history 2015-2026
+48f818e feat: add mpc_rate_change, mpc_vote_split, ofgem_cap_delta, budget_event to REGISTRY
+bc83512 test: failing tests for regulatory event REGISTRY entries
+394a8c2 feat: extend backtest to 2026, train-from 1997 (remove 2025 OOS blind test)
+
+### Model Summary
+- **Session goal**: pitch prep for FICC quant head; identify why models underforecast May 2026 UK CPI vs market (2.8–2.9%)
+- **Root cause identified**: April 2026 Ofgem energy price cap reset (−£117 quarterly) treated as trending disinflation signal by UCM (local linear trend) and TVP; market correctly reads it as one-off structural event
+- **UCM outlier**: 1.80% forecast (vs market 2.8–2.9%), skewing tier-1 consensus; UCM mechanically extrapolates downtrend. Corrected consensus 2.30% (median ex-UCM)
+- **Branch `reg-events` created**: extends backtest `--end 2026`, `--train-from 1997`; removes 2025 OOS blind test
+- **4 new factors added to REGISTRY in `code/factors.py`**: `mpc_rate_change` (FRED BOEBRATE diff×100, bps), `mpc_vote_split` (net hawks hike−cut, CSV, forward-filled), `ofgem_cap_delta` (quarterly cap level diff, CSV), `budget_event` (fiscal event binary, CSV)
+- **Data files created**: `data/ofgem_cap.csv` (139 rows Jan 2015–Jun 2026), `data/budget_event.csv` (319 rows Jan 2000–Jun 2026, 49 fiscal events), `data/mpc_vote_split.csv` (MPC decisions 2003–Mar 2026, sourced from BoE minutes), `data/mpc_rate_change.csv` (138 rows monthly bps change 2015–2026)
+- **MPC vote data**: fetched Aug 2025–Mar 2026 from BoE website; Aug 2025 5-4 cut to 4.00%, Sep/Nov/Feb holds, Dec 2025 5-4 cut to 3.75%, Mar 2026 unanimous 9-0 hold
+- **11 unit tests**: `TestRegulatoryEventFactors` class added to `code/tests/test_main.py`; all 11 pass + 2 integration tests (`test_all_four_in_build_matrix`, `test_regulatory_factors_have_zero_pub_lag`)
+- **Pre-existing test failures**: `TestScreenCandidates` (2 tests) fail due to `shap` not installed in `quant` conda env — unrelated to this branch; confirmed on main too
+- **All 4 factors**: `candidate=False` (always included), `pub_lag=0`, CSV drop-in via `_load_csv` pipeline
+- **WebFetch permission**: added `"WebFetch"` to `.claude/settings.json` allow list
+
+### Handoff Context (paste into next session)
+**Branch:** `reg-events` (off main). **All regulatory event factor tasks complete.**
+
+**Git state (after b36724d):**
+- `data/mpc_rate_change.csv`, `data/mpc_vote_split.csv` — force-added (data/ is gitignored)
+- `data/ofgem_cap.csv`, `data/budget_event.csv` — force-added in earlier commits
+- `code/factors.py` — 4 new REGISTRY entries + `_mpc_vote_split()` helper
+- `code/tests/test_main.py` — 13 tests in `TestRegulatoryEventFactors`
+- `code/main.py` — `--end 2026`, `--train-from 1997`
+
+**To run tests:**
+```bash
+conda run -n quant python -m pytest code/tests/test_main.py::TestRegulatoryEventFactors -v
+```
+
+**Pending decision (paused at finishing-a-development-branch skill):**
+User was presented with 4 options and did not respond before session ended:
+1. Merge `reg-events` → `main` locally
+2. Push and create PR
+3. Keep branch as-is
+4. Discard
+
+**To resume:** re-invoke `superpowers:finishing-a-development-branch` or just merge manually:
+```bash
+git checkout main && git merge reg-events && git branch -d reg-events
+```
+
+**To run full backtest with new factors (requires FRED_API_KEY):**
+```bash
+cd /Users/Adam/Documents/home/quant/nowcast
+FRED_API_KEY=<key> conda run -n quant python -W ignore code/main.py \
+  --start 2015 --end 2026 --train-from 1997 --shap-screen 2>&1 | tee logs/run_reg.log
+```
+
+**Architecture:** 4 regulatory factors integrate automatically via `build_matrix()` + `apply_publication_lags()` (pub_lag=0 → no shift). No changes needed to models or main.py.
+
+**CAVEMAN MODE** active (full level).
+
+---
