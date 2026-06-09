@@ -23,7 +23,7 @@ Mixed-frequency discipline:
   by 1 month so row T contains factor(T-1).
 
 Usage:
-  FRED_API_KEY=<key> python nowcast_cpi.py [--start 2015] [--train-from 1992]
+  FRED_API_KEY=<key> python nowcast_cpi.py [--start 2015] [--train-from 1997]
   FRED_API_KEY=<key> python nowcast_cpi.py --start 2015 --rmc       # include regime-model-combine
 """
 
@@ -737,9 +737,8 @@ def subsample_rmse(bt_dict, periods):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start",      type=int, default=2015, help="first backtest year")
-    ap.add_argument("--end",        type=int, default=2024,
-                    help="last backtest year (default 2024; 2025+ reserved as blind test)")
-    ap.add_argument("--train-from", type=int, default=1992, help="earliest training data year")
+    ap.add_argument("--end",        type=int, default=2026, help="last backtest year (default 2026)")
+    ap.add_argument("--train-from", type=int, default=1997, help="earliest training data year")
     ap.add_argument("--rmc",        action="store_true",
                     help="run regime-model-combine framework (slow: ~3-5 min extra)")
     ap.add_argument("--rmc-methods", nargs="+",
