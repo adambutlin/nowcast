@@ -1,4 +1,13 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(conda run *)",
+      "Bash(jupyter nbconvert *)",
+      "Bash(curl -s *)",
+      "Bash(curl -v *)",
+      "WebFetch"
+    ]
+  },
   "hooks": {
     "Stop": [
       {

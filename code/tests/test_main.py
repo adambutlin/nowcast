@@ -277,5 +277,20 @@ class TestRegulatoryEventFactors(unittest.TestCase):
         self.assertEqual(s.loc["2022-10-31"], 1)
 
 
+    def test_all_four_in_build_matrix(self):
+        """build_matrix includes all 4 regulatory factors with non-unavailable status."""
+        REG_FACTORS = ["mpc_rate_change", "mpc_vote_split", "ofgem_cap_delta", "budget_event"]
+        df, status = F.build_matrix(names=REG_FACTORS)
+        for name in REG_FACTORS:
+            self.assertIn(name, status, f"{name} missing from status dict")
+            self.assertNotEqual(status[name], "unavailable", f"{name} is unavailable")
+            self.assertIn(name, df.columns, f"{name} missing from DataFrame columns")
+
+    def test_regulatory_factors_have_zero_pub_lag(self):
+        """All 4 regulatory factors have pub_lag=0."""
+        for name in ["mpc_rate_change", "mpc_vote_split", "ofgem_cap_delta", "budget_event"]:
+            self.assertEqual(F.REGISTRY[name]["pub_lag"], 0, f"{name} pub_lag != 0")
+
+
 if __name__ == "__main__":
     unittest.main()
