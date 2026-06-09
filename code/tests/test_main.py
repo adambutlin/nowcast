@@ -192,5 +192,90 @@ class TestModelGate(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestRegulatoryEventFactors(unittest.TestCase):
+    def test_mpc_rate_change_in_registry(self):
+        self.assertIn("mpc_rate_change", F.REGISTRY)
+
+    def test_mpc_rate_change_fields(self):
+        e = F.REGISTRY["mpc_rate_change"]
+        self.assertEqual(e["pub_lag"], 0)
+        self.assertFalse(e["candidate"])
+        self.assertEqual(e["transform"], "level")
+        self.assertIsNotNone(e.get("fetch"))
+
+    def test_mpc_vote_split_in_registry(self):
+        self.assertIn("mpc_vote_split", F.REGISTRY)
+
+    def test_mpc_vote_split_fields(self):
+        e = F.REGISTRY["mpc_vote_split"]
+        self.assertEqual(e["pub_lag"], 0)
+        self.assertFalse(e["candidate"])
+        self.assertEqual(e["transform"], "level")
+        self.assertEqual(e["csv"], "mpc_vote_split.csv")
+
+    def test_ofgem_cap_delta_in_registry(self):
+        self.assertIn("ofgem_cap_delta", F.REGISTRY)
+
+    def test_ofgem_cap_delta_fields(self):
+        e = F.REGISTRY["ofgem_cap_delta"]
+        self.assertEqual(e["pub_lag"], 0)
+        self.assertFalse(e["candidate"])
+        self.assertEqual(e["transform"], "diff")
+        self.assertIsNone(e["fetch"])
+        self.assertEqual(e["csv"], "ofgem_cap.csv")
+
+    def test_budget_event_in_registry(self):
+        self.assertIn("budget_event", F.REGISTRY)
+
+    def test_budget_event_fields(self):
+        e = F.REGISTRY["budget_event"]
+        self.assertEqual(e["pub_lag"], 0)
+        self.assertFalse(e["candidate"])
+        self.assertEqual(e["transform"], "level")
+        self.assertIsNone(e["fetch"])
+        self.assertEqual(e["csv"], "budget_event.csv")
+
+    def test_mpc_vote_split_loads_and_forward_fills(self):
+        """_mpc_vote_split() returns a ffilled monthly series with values in [-9, 9]."""
+        import tempfile, os
+        csv_content = "date,hike_votes,hold_votes,cut_votes\n2022-02-03,5,4,0\n2022-03-17,8,1,0\n2022-05-05,6,3,0\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write(csv_content)
+            tmp = f.name
+        try:
+            orig = F.DATA_DIR
+            import unittest.mock as mock
+            with mock.patch.object(F, "DATA_DIR", os.path.dirname(tmp)):
+                dest = os.path.join(os.path.dirname(tmp), "mpc_vote_split.csv")
+                os.rename(tmp, dest)
+                s = F._mpc_vote_split()
+                self.assertEqual(s.loc["2022-02-28"], 5)
+                self.assertEqual(s.loc["2022-03-31"], 8)
+                self.assertEqual(s.loc["2022-04-30"], 8)
+                self.assertTrue((s >= -9).all() and (s <= 9).all())
+        finally:
+            try:
+                os.remove(dest)
+            except Exception:
+                pass
+
+    def test_ofgem_cap_delta_spikes_oct_2022(self):
+        """ofgem_cap_delta series shows large positive spike in Oct 2022."""
+        s, status = F.load_factor("ofgem_cap_delta")
+        if status == "unavailable":
+            self.skipTest("data/ofgem_cap.csv not yet created")
+        oct_2022 = s.loc["2022-10-31"] if "2022-10-31" in s.index else None
+        self.assertIsNotNone(oct_2022)
+        self.assertGreater(oct_2022, 500)
+
+    def test_budget_event_sep_oct_2022(self):
+        """budget_event = 1 for Sep 2022 (mini-budget) and Oct 2022 (reversal)."""
+        s, status = F.load_factor("budget_event")
+        if status == "unavailable":
+            self.skipTest("data/budget_event.csv not yet created")
+        self.assertEqual(s.loc["2022-09-30"], 1)
+        self.assertEqual(s.loc["2022-10-31"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
