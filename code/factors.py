@@ -83,6 +83,22 @@ def _dbnomics(provider, dataset, series):
     return s.resample("ME").last()
 
 
+def _mpc_vote_split():
+    """
+    Load data/mpc_vote_split.csv [date, hike_votes, hold_votes, cut_votes]
+    → net hawks series (hike_votes - cut_votes), resampled to month-end,
+    forward-filled so committee stance persists between meetings.
+    Values in range [-9, 9]; 0 only before first meeting date.
+    """
+    path = os.path.join(DATA_DIR, "mpc_vote_split.csv")
+    df = pd.read_csv(path, parse_dates=["date"])
+    df["value"] = df["hike_votes"].astype(float) - df["cut_votes"].astype(float)
+    s = df.set_index("date")["value"].sort_index()
+    s.index = s.index + pd.offsets.MonthEnd(0)   # snap to month-end
+    s = s.resample("ME").last()
+    return s.ffill()
+
+
 def _boe_spot_5y(zip_url):
     r = requests.get(zip_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
     z = zipfile.ZipFile(io.BytesIO(r.content))
@@ -782,6 +798,41 @@ REGISTRY = {
         csv="sdf_daily_spend.csv",
         note="Smart Data Foundry daily spending (monthly agg). pub_lag=0 (real-time). "
              "Gated. Drop CSV."),
+
+    # ── regulatory event factors: pub_lag=0 (known before CPI release) ────────
+    "mpc_rate_change": dict(
+        fetch=lambda: _fred("BOEBRATE").diff() * 100,
+        transform="level", pub_lag=0, candidate=False,
+        csv="mpc_rate_change.csv",
+        note="BoE Bank Rate monthly change (bps). FRED BOEBRATE diff×100. "
+             "pub_lag=0: MPC decision announced same day, weeks before CPI release. "
+             "0 in unchanged months. CSV override: data/mpc_rate_change.csv."),
+
+    "mpc_vote_split": dict(
+        fetch=_mpc_vote_split,
+        transform="level", pub_lag=0, candidate=False,
+        csv="mpc_vote_split.csv",
+        note="MPC net hawks = hike_votes - cut_votes (-9 to +9). "
+             "Source: BoE MPC minutes. Forward-filled between meetings so "
+             "committee stance persists. pub_lag=0: vote announced on decision day. "
+             "Curate from https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes"),
+
+    "ofgem_cap_delta": dict(
+        fetch=None, transform="diff", pub_lag=0, candidate=False,
+        csv="ofgem_cap.csv",
+        note="Ofgem quarterly price cap level £/yr (typical dual-fuel household). "
+             "diff transform → monthly delta; 0 in non-change months. "
+             "Standard cap introduced Oct 2018; pre-Oct 2018 = 0. "
+             "pub_lag=0: cap announced 4-6 weeks before effective date. "
+             "Source: https://www.ofgem.gov.uk/check-if-energy-price-cap-affects-you"),
+
+    "budget_event": dict(
+        fetch=None, transform="level", pub_lag=0, candidate=False,
+        csv="budget_event.csv",
+        note="Fiscal event binary (1=event month, 0 otherwise). Covers all UK "
+             "Spring Budgets, Autumn Statements, Spring Statements, and off-cycle "
+             "events (Sep 2022 Kwarteng mini-budget, Oct 2022 Hunt reversal). "
+             "pub_lag=0: announced on the day. Curate from HM Treasury records."),
 }
 
 
