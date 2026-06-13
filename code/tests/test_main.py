@@ -75,9 +75,9 @@ class TestRollingWindow(unittest.TestCase):
 class TestAllModels(unittest.TestCase):
     def test_all_models_count(self):
         models = Z.all_models()
-        self.assertEqual(len(models), 6)  # user-curated 2026-06-13: AutoARIMA, ElasticNet, UCM, TVP, MIDAS, DFM-k2
+        self.assertEqual(len(models), 5)  # user-curated 2026-06-13: AutoARIMA, ElasticNet, UCM, TVP, MIDAS (DFM family dropped)
         names = {m.name for m in models}
-        self.assertEqual(names, {"AutoARIMA", "ElasticNet", "UCM", "TVP", "MIDAS", "DFM-k2"})
+        self.assertEqual(names, {"AutoARIMA", "ElasticNet", "UCM", "TVP", "MIDAS"})
 
     def test_experimental_models_exist(self):
         exp = Z.experimental_models()

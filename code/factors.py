@@ -300,6 +300,28 @@ def _uk_breakeven():
     return be.resample("ME").last()
 
 
+def _nyfed_gscpi():
+    """NY Fed Global Supply Chain Pressure Index (GSCPI), month-end.
+    Parses the NY Fed xlsx directly. Note: in some sandboxed networks the NY Fed
+    URL returns an HTML wall (no file) — then this raises and the CSV drop-in
+    (data/global_supply_chain_pressure.csv) is used instead."""
+    url = ("https://www.newyorkfed.org/medialibrary/research/policy/"
+           "gscpi/gscpi_data.xlsx")
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    xl = pd.ExcelFile(io.BytesIO(r.content))          # raises if HTML/not a zip
+    for sh in xl.sheet_names:
+        d = xl.parse(sh)
+        cols = {str(c).strip().lower(): c for c in d.columns}
+        gcol = next((cols[k] for k in cols if "gscpi" in k or "pressure" in k), None)
+        dcol = next((cols[k] for k in cols if "date" in k), None)
+        if gcol is not None and dcol is not None:
+            s = d[[dcol, gcol]].copy()
+            s[dcol] = pd.to_datetime(s[dcol], errors="coerce")
+            s = s.dropna(subset=[dcol]).set_index(dcol)[gcol].astype(float)
+            return s.resample("ME").last()
+    raise RuntimeError("GSCPI: date/GSCPI columns not found in NY Fed file")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSFORMS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -492,14 +514,20 @@ REGISTRY = {
              "Transmits into UK goods CPI with 2-4 month lag. "
              "Fallback: data/deep_sea_freight.csv."),
     "global_supply_chain_pressure": dict(
-        fetch=None, transform="level",
+        fetch=_nyfed_gscpi, transform="level",
         pub_lag=0, candidate=True, csv="global_supply_chain_pressure.csv",
         note="NY Fed Global Supply Chain Pressure Index (GSCPI). Standardised "
              "composite of BDI, air freight, PMI backlogs, cross-country PPI "
-             "divergence. Monthly, 1997+. Not on FRED; fetch from NY Fed directly: "
-             "https://www.newyorkfed.org/research/policy/gscpi (Excel download). "
-             "pub_lag=0. Validated predictor of global goods inflation 1-3 months "
-             "ahead. Drop data/global_supply_chain_pressure.csv [date, value=index]."),
+             "divergence. Monthly, 1997+. Fetched live from NY Fed xlsx via "
+             "_nyfed_gscpi (some sandboxed networks return an HTML wall → falls "
+             "back to data/global_supply_chain_pressure.csv). pub_lag=0. Validated "
+             "predictor of global goods inflation 1-3 months ahead."),
+    "imf_all_commodity": dict(
+        fetch=lambda: _fred("PALLFNFINDEXM"), transform="logret",
+        pub_lag=0, candidate=True, csv="imf_all_commodity.csv",
+        note="IMF All Commodity Price Index (FRED PALLFNFINDEXM, 2016=100, 1990+). "
+             "logret transform. pub_lag=0: IMF IFS monthly, USD. Broad cost-push "
+             "aggregate (energy + metals + food). Falls back to data/imf_all_commodity.csv."),
 
     # ── Global commodity input costs: pub_lag=0 (market prices, contemporaneous) ─
     # Key non-energy intermediary inputs for UK manufacturing supply chain.
@@ -562,9 +590,10 @@ REGISTRY = {
              "True monthly GDP (ONS ABMI series) available as CSV drop-in. "
              "Drop data/uk_monthly_gdp.csv [date, value=YoY%] for exact GDP."),
     "uk_quarterly_gdp": dict(
-        fetch=lambda: _fred("CLVMNACSCAB1GQUK"), transform="yoy",
+        fetch=lambda: _fred("NGDPRSAXDCGBQ"), transform="yoy",
         pub_lag=2, candidate=True, csv="uk_quarterly_gdp.csv",
-        note="UK real GDP, quarterly chained-volume SA (FRED CLVMNACSCAB1GQUK, OECD/ONS). "
+        note="UK real GDP, quarterly SA (FRED NGDPRSAXDCGBQ, IMF IFS — current through "
+             "2026; CLVMNACSCAB1GQUK was stale at 2020). "
              "YoY% transform. pub_lag=2: first (preliminary) quarterly estimate ~6 weeks "
              "after quarter end; quarterly value ffilled across months so most monthly "
              "nowcasts see a stale-but-real-time GDP read. Verify series id against FRED; "
