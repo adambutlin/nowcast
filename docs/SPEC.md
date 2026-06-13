@@ -1,6 +1,6 @@
 # SPEC — UK CPI Nowcast System Specification
 
-*Version: 2.0 — 2026-06-05*
+*Version: 2.1 — 2026-06-13 (added §10 Rates Repricing subsystem; §9 vintage note updated by H6/C3 remediation)*
 
 ---
 
@@ -199,3 +199,53 @@ factor history; model training from 1992.
 
 5. **Vimes Boots Index construction:** No standard free source. Must be constructed
    from ONS Consumer Price Microdata or JRF Minimum Income Standard data.
+
+---
+
+## 10. Rates Repricing Subsystem (`code/rates/`)
+
+*Branch `alpha-gen`, tag `rates-alpha`. Downstream of the CPI nowcast.*
+
+### 10.1 Hypothesis
+Does the CPI nowcast contain information about future UK rates repricing **not
+already embedded in consensus / market pricing?** Tradeable only via the
+*surprise* (forecast − consensus), never the level.
+
+### 10.2 Pipeline
+`config.MODEL` forecast → `event_panel` (one row per CPI release; predictors known
+at release eve T−1, outcome = release-day signed rate move in bp) → forecast gap →
+**Stage 1** (`stage1`: gap predicts realized surprise?) → **Stage 2**
+(`gates.gate2_incremental`: gap reprices rates, HAC, walk-forward) → regime /
+confidence / risk → 2Y gilt position.
+
+### 10.3 Causality contract
+Predictor sources (nowcast, consensus, market-implied) must be knowable at T−1.
+The only release-day read is the signed move = level(release) − level(prev
+business day). All standardization is expanding with `shift(1)`. Walk-forward
+estimation throughout. LDI window (2022-09-19…10-31) and budget months excluded.
+
+### 10.4 Mechanical-identity guard (Stage 1)
+A benchmark whose horizon/units mismatch the monthly print collapses the gap into
+the CPI level and the test degenerates to forecast accuracy. The guard runs a
+constant-anchor placebo (if it reproduces the slope, the anchor adds nothing) plus
+a gap-vs-forecast-level correlation check, and returns `INVALID_MECHANICAL`. This
+rejected the BoE 2.5Y-RPI breakeven benchmark.
+
+### 10.5 Benchmark precedence (`event_panel._anchor`)
+`economist_consensus` (incl. `consensus_cpi.csv`) → `market_implied` → `ucl` →
+`naive_rw`. Real survey consensus is licensed; the shipped proxy is univariate
+(AutoARIMA). Note: a univariate proxy is a **lower bar** than a professional survey
+— a Stage-1 PASS against it is necessary, not sufficient.
+
+### 10.6 Production layer
+`regime` (causal policy×inflation regime + `regime_trust∈[0,1]`), `prod_signal`
+(forecast_gap_z, revision_z, confidence = trust×strength), `risk` (LDI/budget
+exclusion, vol kill switch, low-confidence suppression), `production`
+(confidence-weighted vol-targeted position, backtest, regime attribution),
+`run_production` (8-step workflow, `config.MODEL` switch).
+
+### 10.7 Current verdict
+No deployable edge on current free data. Stage 1 vs univariate consensus passes but
+is tiny (OOS R²≈0.05) and fails pre-2020; Stage 2 / production repricing OOS R² is
+negative (≈−0.28); the risk layer suppresses trading (latest live rec FLAT).
+Decisive next test requires point-in-time survey consensus (`data/consensus_cpi.csv`).

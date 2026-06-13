@@ -1,6 +1,23 @@
 # STATE — UK CPI Nowcast Project
 
-*Last updated: 2026-06-07*
+*Last updated: 2026-06-13*
+
+> **2026-06-12 — backtest-validity remediation (commit `518f528`, merged to `main`).**
+> Fixed three audit findings that invalidated reported OOS performance:
+> - **C1 ensemble-selection leakage** — replaced full-sample beats-AR(1) membership
+>   with walk-forward `combine_recursive` (members chosen from history before each year).
+> - **C4 non-common evaluation samples** — `common_sample_metrics` recomputes the
+>   benchmark RMSE on each model's intersection dates; per-year backtest failures are
+>   now loud, not silent sample-shrinkage.
+> - **H6 silent stale forward-fill** — `factor_health()` LIVE/STALE/DEAD classifier;
+>   `_nowcast_row` ffill is budgeted to `pub_lag+grace` and returns None (with a
+>   `[STALE]` warning) beyond budget.
+> `code/tests/test_remediation.py` (10 tests, red on HEAD, green after). C5 (holdout
+> contamination) and C3 (full vintage discipline) are documented strategy, not yet
+> fully implemented.
+>
+> **2026-06-13 — rates-repricing pipeline (branch `alpha-gen`, tag `rates-alpha`).**
+> New `code/rates/` package. See "Rates Repricing Pipeline" below.
 
 ## What is Running
 
@@ -33,6 +50,42 @@ Combined-Static, Combined-Dynamic, Combined-Superstar, Combined-Absolute
 
 **Regime-model-combine metamodel (--rmc flag):**
 RMC-hmm (recursive HMM labels, fixed params, no refit)
+
+---
+
+## Rates Repricing Pipeline (`code/rates/`, branch `alpha-gen`, tag `rates-alpha`)
+
+**Question:** does the CPI nowcast carry information about future UK rates
+repricing beyond consensus / market pricing? **Not** "can it forecast CPI."
+
+**Flow:** model forecast (`config.MODEL`) → `event_panel` → forecast gap →
+`stage1` (gap → realized surprise?) → `gates.gate2_incremental` (gap → rates?) →
+`regime`/`prod_signal`/`risk`/`production` → 2Y gilt position. Real BoE daily
+gilt+OIS curves cached to `data/uk_rates_daily.csv` (2005–2026).
+
+**Run:** `python -m rates.run_production [--model HuberNet|TVP|Combined-Dynamic|ElasticNet] [--compare]`
+
+**Empirical findings:**
+| Test | Benchmark | Verdict |
+|------|-----------|---------|
+| Stage 1 | naive RW | inconclusive |
+| Stage 1 | market-implied (BoE 2.5Y RPI breakeven) | **INVALID_MECHANICAL** — horizon/index mismatch; constant-anchor placebo reproduces slope within 3% → guard rejects |
+| Stage 1 | univariate consensus (AutoARIMA) | **PASS but tiny** — b=0.091, HAC t=3.0, OOS R²=0.047, sign-hit 0.60; survives ex-2022/23 (t=3.1) & ex-COVID (t=2.25); **fails pre-2020** |
+| Model sweep (gap vs AutoARIMA) | — | TVP largest full-sample (OOS R² 0.12, t=5.3) but **collapses ex-2022/23** (regime artifact); HuberNet most robust; ensemble dilutes via PCR |
+| Stage 2 / production backtest | 2Y gilt | repricing OOS R² **−0.28**; Sharpe ≈ −0.7 all 4 models; risk layer suppresses (0 trades in 55 pinned events); latest live rec **FLAT** (low confidence) |
+
+**Verdict:** no deployable edge on current data. The production risk layer correctly
+refuses to trade. Posterior that the nowcast beats a real **survey** consensus ≈ **15%**.
+**Blocker:** point-in-time survey consensus (licensed/survivorship-risky) — drop
+`data/consensus_cpi.csv [date,consensus_cpi]` and rerun the guarded Stage 1; that is
+the decisive next test.
+
+**Modules:** `config.py` (MODEL switch), `event_panel.py`, `sources.py`, `gates.py`
+(Gate1/Gate2), `stage1.py` (mechanical-identity guard), `market_implied.py`,
+`consensus.py`, `model_sweep.py`, `regime.py`, `prod_signal.py`, `risk.py`,
+`production.py`, `run_production.py`, `synth.py`, `mvp.py`, `signal.py`.
+**Tests:** `test_rates_panel.py`, `test_rates_gates.py`, `test_rates_production.py` (27).
+**Outputs:** `data/rates_event_panel.csv`, `data/model_sweep/`, `data/production/`.
 
 ---
 
@@ -188,8 +241,11 @@ vs Combined-Dynamic=0.453/0.457 → still doesn't beat best ensemble
 |------------------------------------|--------------------------------------------------------|
 | `code/factors.py`                  | 38-factor registry, `apply_publication_lags()`, fetchers |
 | `code/uk_model_zoo.py`             | 13 operational + 9 experimental models + scoring       |
-| `code/main.py`                     | Main runner: backtest, ensembles, RMC, nowcast output  |
-| `code/tests/test_main.py`          | 16 unit tests (factors, models, pub-lag discipline)    |
+| `code/main.py`                     | Main runner: backtest, `combine_recursive`, `common_sample_metrics`, RMC, nowcast |
+| `code/rates/`                      | Rates-repricing pipeline (event panel → gates → production) |
+| `code/tests/test_main.py`          | unit tests (factors, models, pub-lag discipline)       |
+| `code/tests/test_remediation.py`   | 10 tests (H6/C4/C1 remediation guards)                 |
+| `code/tests/test_rates_*.py`       | 27 rates pipeline tests                                |
 | `data/nowcast_cpi_backtest.csv`    | Backtest predictions (all models, all periods)         |
 | `data/nowcast_cpi_metrics.csv`     | RMSE/MAE/dir_acc/beats_ar1 per model                   |
 | `data/nowcast_cpi_nowcast.csv`     | Latest nowcast per model                               |

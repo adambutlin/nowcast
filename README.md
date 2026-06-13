@@ -1,14 +1,20 @@
 # nowcast
 
-UK CPI YoY nowcasting. 21-model zoo with 30 live factors, mixed-frequency
-pub-lag discipline, regime identification, ensemble combination, and
-regime-model-combine framework.
+UK CPI YoY nowcasting (13 operational + 9 experimental model zoo, 38 live
+factors, mixed-frequency pub-lag discipline, regime identification, ensemble
+combination, regime-model-combine) **plus** a downstream rates-repricing research
+pipeline (`code/rates/`) that tests whether the nowcast carries information beyond
+consensus and can be turned into a UK 2Y gilt signal.
 
 **Documentation:**
-- [STATE.md](STATE.md) — current results, factor matrix, pending work
-- [SPEC.md](SPEC.md) — system specification and design decisions
-- [PROCESS.md](PROCESS.md) — chronological build log
+- [docs/STATE.md](docs/STATE.md) — current results, factor matrix, rates pipeline status, pending work
+- [docs/SPEC.md](docs/SPEC.md) — system specification and design decisions
+- [docs/PROCESS.md](docs/PROCESS.md) — chronological build log
 - [docs/handoff/HANDOFF.md](docs/handoff/HANDOFF.md) — session handoff notes
+
+**Branches / tags:** `main` carries the audited+remediated CPI nowcast (H6/C4/C1
+fixes, commit `518f528`). `alpha-gen` (tag `rates-alpha`) carries the rates
+pipeline. See the Rates Repricing Pipeline section below.
 
 ---
 
@@ -91,18 +97,54 @@ regime signal.
 
 ---
 
+## Rates Repricing Pipeline (`code/rates/`)
+
+Tests one hypothesis: **does the CPI nowcast contain information about future UK
+rates repricing not already in consensus / market pricing?** Built on `alpha-gen`
+(tag `rates-alpha`).
+
+**Flow:** model forecast → event panel → forecast gap → Stage 1 (gap predicts
+realized surprise?) → Stage 2 (gap reprices rates?) → regime/confidence/risk
+production pipeline → 2Y gilt position.
+
+**Run:**
+```bash
+python -m rates.run_production              # config.MODEL (default HuberNet)
+RATES_MODEL=TVP python -m rates.run_production --compare
+python -c "from rates import event_panel,stage1; print(stage1.stage1_test(event_panel.build_event_panel()))"
+```
+
+**Empirical verdicts (see STATE.md for detail):**
+- Stage 1 vs **market-implied** (BoE 2.5Y RPI curve) → `INVALID_MECHANICAL`
+  (horizon/index mismatch; guard rejects it).
+- Stage 1 vs **univariate consensus** (AutoARIMA) → PASS but economically tiny
+  (b=0.09, HAC t=3.0, OOS R²≈0.05); survives ex-2022/23 & ex-COVID, fails pre-2020.
+- Model sweep: TVP has the largest full-sample signal but it is a 2022-23
+  regime artifact; **HuberNet** is the most robust.
+- Production backtest is honestly negative (Sharpe ≈ −0.7 across all models); the
+  risk layer suppresses trading and the latest live recommendation is FLAT.
+- Posterior that the nowcast beats a real **survey** consensus: ~15%. Blocker =
+  point-in-time survey consensus data (licensed). Drop `data/consensus_cpi.csv`.
+
+Key modules: `event_panel.py`, `gates.py` (Gate1/Gate2), `stage1.py` (guarded),
+`market_implied.py`, `consensus.py`, `model_sweep.py`, `regime.py`,
+`prod_signal.py`, `risk.py`, `production.py`, `run_production.py`.
+
+---
+
 ## Files
 
 | File | Description |
 |------|-------------|
-| `factors.py` | 30-factor registry, `apply_publication_lags()`, fetchers |
-| `uk_model_zoo.py` | 21 models, `dm_test()`, `score_backtest()`, `nowcast()` |
-| `nowcast_cpi.py` | Main runner: backtest, ensembles, RMC, nowcast output |
-| `nowcast_plot.py` | UCM/TVP 6-month forward forecast plot |
-| `plot_nowcast_history.py` | Regenerates `nowcast_history_3.png` from CSVs |
-| `test_nowcast_cpi.py` | 15 tests |
-| `STATE.md` | Current system state, last results, pending work |
-| `SPEC.md` | System specification and design decisions |
+| `code/factors.py` | 38-factor registry, `apply_publication_lags()`, `factor_health()`, fetchers |
+| `code/uk_model_zoo.py` | 13 operational + 9 experimental models, `dm_test()`, `score_backtest()`, `nowcast()` |
+| `code/main.py` | Main CPI runner: backtest, `combine_recursive`, `common_sample_metrics`, RMC, nowcast |
+| `code/sweep_factors.py` | Forward factor-addition sweep |
+| `code/plot_nowcast_history.py` | Regenerates history plot from CSVs |
+| `code/rates/` | Rates-repricing pipeline (event panel → gates → production) |
+| `code/tests/` | `test_main.py`, `test_remediation.py`, `test_rates_*.py` (66 tests) |
+| `docs/STATE.md` | Current system state, last results, rates pipeline, pending work |
+| `docs/SPEC.md` | System specification and design decisions |
 
 ---
 
@@ -133,10 +175,15 @@ pip install pandas numpy yfinance lightgbm shap scikit-learn statsmodels \
 **UK model zoo:**
 ```bash
 export FRED_API_KEY=your_key_here
-# Full 21-model backtest (blind test: --end 2024 enforced)
-python -W ignore nowcast_cpi.py --start 2015 --end 2024 --train-from 1992
+# Full backtest (blind test: --end 2024 enforced)
+python -W ignore code/main.py --start 2015 --end 2024 --train-from 1992 --shap-screen
 # With RMC (~5–10 min extra):
-python -W ignore nowcast_cpi.py --start 2015 --end 2024 --train-from 1992 --rmc
-# Regenerate history plot:
-python plot_nowcast_history.py
+python -W ignore code/main.py --start 2015 --end 2024 --train-from 1992 --shap-screen --rmc
+# Tests:
+.venv/bin/python -m pytest code/tests/ -q
+```
+
+**Rates pipeline:**
+```bash
+python -m rates.run_production --compare
 ```

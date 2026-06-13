@@ -5,6 +5,64 @@ Each entry: date, what changed, why.
 
 ---
 
+## 2026-06-13 — Rates repricing pipeline (`code/rates/`, branch `alpha-gen`, tag `rates-alpha`)
+
+### Changes
+- **New `code/rates/` package** turning the CPI nowcast into a rates-repricing
+  research pipeline: `event_panel` (one row per CPI release; predictors known at
+  T−1, outcomes release-day), `sources` (CSV-drop-in adapters + real BoE daily
+  gilt/OIS fetch cached to `data/uk_rates_daily.csv`), `gates` (Gate 1 accuracy,
+  Gate 2 incremental HAC regression), `stage1` (guarded forecast-gap test).
+- **Mechanical-identity guard** in `stage1`: a constant-anchor placebo + a
+  gap-vs-forecast-level correlation check. Rejected the BoE 2.5Y-RPI market-implied
+  benchmark as `INVALID_MECHANICAL` (horizon/index mismatch → the test degenerated
+  to Gate-1 forecast accuracy).
+- **Consensus benchmark** (`consensus.py`): real survey consensus is licensed/
+  survivorship-risky, so built a univariate (AutoARIMA/AR1) proxy. Stage 1 PASSES
+  but is economically tiny (b=0.091, HAC t=3.0, OOS R²=0.047); survives ex-2022/23
+  and ex-COVID, fails pre-2020.
+- **Model sweep** (`model_sweep.py`): every model's gap vs AutoARIMA through the
+  unchanged Stage 1. TVP has the largest full-sample signal but it is a 2022-23
+  regime artifact (collapses ex-shock); HuberNet is the most robust; ensemble
+  dilutes via PCR.
+- **Production pipeline** (`regime`, `prod_signal`, `risk`, `production`,
+  `run_production`): causal policy×inflation regimes + `regime_trust`, confidence =
+  trust × signal strength, risk controls (LDI/budget exclusion, vol kill switch,
+  low-confidence suppression), confidence-weighted vol-targeted 2Y gilt position,
+  regime attribution. `config.MODEL` switch (default HuberNet). 27 rates tests.
+
+### Why
+The CPI nowcast is only tradeable if it carries information beyond what the rates
+market already prices. The pipeline answers "when should the signal be trusted",
+not "what is the average coefficient." Result: production backtest is honestly
+negative (Sharpe ≈ −0.7 all models; repricing OOS R² −0.28) and the risk layer
+refuses to deploy (latest rec FLAT). No deployable edge on current free data;
+the decisive next test needs point-in-time survey consensus.
+
+---
+
+## 2026-06-12 — Backtest-validity remediation (commit `518f528`, merged to `main`)
+
+### Changes
+- **C1 (ensemble selection leakage):** `combine_recursive` selects ensemble members
+  walk-forward from history strictly before each year, replacing the full-sample
+  beats-AR(1) gate. Combined-Superstar scored only after its selection window.
+- **C4 (non-common evaluation samples):** `common_sample_metrics` recomputes the
+  benchmark RMSE on each model's intersection dates and reports coverage +
+  `beats_ar1` on the common sample; per-year backtest failures made loud.
+- **H6 (silent stale forward-fill):** `factor_health()` LIVE/STALE/DEAD liveness
+  classifier; `_nowcast_row` ffill budgeted to `pub_lag+grace`, returns None with a
+  `[STALE]` warning beyond budget.
+- `code/tests/test_remediation.py` — 10 tests (red on HEAD, green after patch).
+
+### Why
+A hostile forensic audit found ensemble-selection leakage, non-common evaluation
+samples, and silent stale forward-fill materially overstated reported OOS
+performance. C5 (consumed holdout) and C3 (full vintage discipline) are documented
+strategy, deferred.
+
+---
+
 ## 2026-06-05 — Session 3 (regime framework + mixed frequency)
 
 ### Changes
