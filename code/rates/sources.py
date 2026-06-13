@@ -68,7 +68,15 @@ def my_nowcast(model=None, fallback=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def ucl_nowcast():        return _load_value_csv(C.UCL_CSV, "ucl_nowcast")
-def economist_consensus():return _load_value_csv(C.CONSENSUS_CSV, "economist_consensus")
+
+def economist_consensus():
+    """Consensus expectation. Prefers data/consensus_cpi.csv (Part B, real survey
+    or univariate proxy); falls back to data/economist_consensus.csv."""
+    from .consensus import CONSENSUS_CPI_CSV
+    s = _load_value_csv(CONSENSUS_CPI_CSV, "economist_consensus")
+    if s.notna().any():
+        return s
+    return _load_value_csv(C.CONSENSUS_CSV, "economist_consensus")
 def market_implied():     return _load_value_csv(C.MKT_IMPLIED_CSV, "market_implied_expectation")
 
 

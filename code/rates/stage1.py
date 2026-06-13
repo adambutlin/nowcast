@@ -112,11 +112,15 @@ def stage1_test(panel, min_train=24, exclude_ldi=True, plot=True):
 
 
 def _placebo_constant_anchor(p):
-    """Re-run Stage 1 with market_implied replaced by its (full-sample) mean —
-    i.e. a CONSTANT anchor. If the slope ~matches the real one, the market
-    series carries no information and the real PASS is a mechanical identity.
-    Returns (slope, corr)."""
-    const = float(p["market_implied_expectation"].mean())
+    """Re-run Stage 1 with the ACTIVE anchor (baseline_expectation) replaced by
+    its full-sample mean — a CONSTANT anchor. If the slope ~matches the real one,
+    the anchor series carries no information and the real PASS is a mechanical
+    identity. Anchor-agnostic. Returns (slope, corr)."""
+    anchor = p["baseline_expectation"] if "baseline_expectation" in p.columns \
+        else p.get("market_implied_expectation")
+    if anchor is None or not anchor.notna().any():
+        return np.nan, np.nan
+    const = float(anchor.mean())
     gap = (p["my_nowcast"] - const)
     mu = gap.expanding(min_periods=12).mean().shift(1)
     sd = gap.expanding(min_periods=12).std().shift(1)
