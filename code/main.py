@@ -862,6 +862,10 @@ def main():
                     help="disable always-keep list (allow SHAP to drop gas_eu etc.)")
     ap.add_argument("--target", default="cpi_yoy",
                     help="target series: cpi_yoy (default) or cpi_yoy_long for extended history")
+    ap.add_argument("--factors", nargs="+", default=None,
+                    help="pin the live exogenous factor set to EXACTLY these names "
+                         "(skips availability widening and SHAP screening; cpi_3m_chg "
+                         "momentum is still appended for the linear models)")
     args = ap.parse_args()
 
     print("Loading factor matrix …")
@@ -874,6 +878,19 @@ def main():
                   and n != "uk_paye"           # identical to uk_awg (both use ONS KAB9)
                   and n not in ("uk_cpih", "uk_services_cpi")  # CPI measures predicting CPI — circular
                   and n != "gas_eu_3m"]  # ablation: adds noise, drops RMSE 0.024 vs gas_eu alone
+    # ── --factors override: pin the exogenous factor set exactly ─────────────
+    if args.factors:
+        avail   = [f for f in args.factors if status.get(f) != "unavailable"]
+        missing = [f for f in args.factors if f not in avail]
+        if missing:
+            print(f"  ⚠ --factors: no live data / CSV for {missing} — skipped. "
+                  f"(drop data/<name>.csv [date,value] to supply.)")
+        if not avail:
+            sys.exit(f"--factors {args.factors}: none available. Need FRED_API_KEY "
+                     f"and/or CSV drop-ins in data/.")
+        live_facs = avail
+        print(f"  --factors override: pinned live set = {live_facs}")
+
     target     = args.target
     if target not in df_raw.columns:
         sys.exit(f"{target} unavailable — check dbnomics / data/ CSV.")
@@ -914,7 +931,7 @@ def main():
           f"{df.dropna(how='all').index.max().date()}")
     print(f"  Factors: {live_facs}")
 
-    if args.shap_screen:
+    if args.shap_screen and not args.factors:
         print(f"\nRunning Shapley factor screening (threshold={args.shap_threshold}) …")
         screen_df = df[df.index.year < args.start]
         kept = F.screen_candidates(screen_df, target, threshold=args.shap_threshold,

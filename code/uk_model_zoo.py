@@ -1842,12 +1842,13 @@ def score_backtest(bt, name="model"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def all_models():
-    """Operational model zoo: RMSE <= 1.5x AR(1) in 2015-2024 38-factor backtest (2026-06-07)."""
+    """Operational model zoo (2026-06-13, user-curated): 6 base models.
+    Combined-Dynamic ensemble is built in main.py from those beating AR(1).
+    Dropped from operational (moved out per review): DFM, BVAR, BridgeEq,
+    MedianElasticNet, HuberNet, PCR, SARIMAX — call experimental_models()/the
+    class directly to run them."""
     return [
-        DFM(), DFM2(), UCM(), TVP(), BVAR(),
-        MIDAS(), BridgeEq(),
-        ElasticNet(), MedianElasticNet(), HuberNet(), PCR(),
-        SARIMAX_Model(), AutoARIMA(),
+        AutoARIMA(), ElasticNet(), UCM(), TVP(), MIDAS(), DFM2(),
     ]
 
 

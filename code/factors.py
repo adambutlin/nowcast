@@ -561,6 +561,14 @@ REGISTRY = {
              "Activity proxy — above-trend output → domestic demand → services CPI. "
              "True monthly GDP (ONS ABMI series) available as CSV drop-in. "
              "Drop data/uk_monthly_gdp.csv [date, value=YoY%] for exact GDP."),
+    "uk_quarterly_gdp": dict(
+        fetch=lambda: _fred("CLVMNACSCAB1GQUK"), transform="yoy",
+        pub_lag=2, candidate=True, csv="uk_quarterly_gdp.csv",
+        note="UK real GDP, quarterly chained-volume SA (FRED CLVMNACSCAB1GQUK, OECD/ONS). "
+             "YoY% transform. pub_lag=2: first (preliminary) quarterly estimate ~6 weeks "
+             "after quarter end; quarterly value ffilled across months so most monthly "
+             "nowcasts see a stale-but-real-time GDP read. Verify series id against FRED; "
+             "drop data/uk_quarterly_gdp.csv [date, value=YoY% or level] to override."),
     "uk_awg": dict(
         fetch=lambda: _ons_awe_kab9(),
         transform="yoy", pub_lag=1, candidate=True, csv="uk_awg.csv",
@@ -670,6 +678,15 @@ REGISTRY = {
              "CSV override (data/uk_house_prices.csv) with ONS nominal HPI takes priority "
              "(download from: https://www.gov.uk/government/collections/"
              "uk-house-price-index-reports)."),
+    "uk_house_prices_real": dict(
+        fetch=lambda: _fred("QGBR628BIS"),
+        transform="yoy", pub_lag=2, candidate=True, csv="uk_house_prices_real.csv",
+        note="REAL UK residential property price index, BIS (FRED QGBR628BIS, "
+             "CPI-deflated, quarterly). YoY%. pub_lag=2. WARNING: real = nominal/CPI, so "
+             "YoY(real) ≈ YoY(nominal) − CPI_YoY → carries a MECHANICAL NEGATIVE relation "
+             "to the CPI target (deflation arithmetic), the reason uk_house_prices uses a "
+             "nominal reconstruction. Use this only if 'real' house prices are explicitly "
+             "wanted as the housing factor. Override: data/uk_house_prices_real.csv."),
     "uk_retail_sales": dict(
         fetch=lambda: _fred("GBRSLRTTO01GYSAM"),
         transform="level", pub_lag=1, candidate=True, csv="uk_retail_sales.csv",
@@ -744,6 +761,15 @@ REGISTRY = {
         note="S&P Global UK PMI Input Prices sub-index. pub_lag=0. Licensed. "
              "Cost-push signal 1-2 months ahead of CPI. "
              "Drop data/uk_pmi_input_prices.csv [date, value=index]."),
+    "uk_pmi_suppliers": dict(
+        fetch=None, transform="level",
+        pub_lag=0, candidate=True, csv="uk_pmi_suppliers.csv",
+        note="S&P Global UK Manufacturing PMI: Suppliers' Delivery Times sub-index "
+             "(classic supply-bottleneck gauge; <50 = lengthening delivery times = "
+             "supply stress; note the index is conventionally INVERTED so longer "
+             "delays print LOWER). pub_lag=0: flash released last week of reference "
+             "month, before CPI. Licensed (S&P Global / Markit) — no free live API. "
+             "Drop data/uk_pmi_suppliers.csv [date, value=index]."),
 
     # ── Earnings/analyst signals: pub_lag=0 (released before CPI) ────────────
     "ibes_revisions_12m": dict(
