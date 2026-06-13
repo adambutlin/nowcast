@@ -1147,3 +1147,39 @@ FRED_API_KEY=<key> conda run -n quant python -W ignore code/main.py \
 **CAVEMAN MODE** active (full level).
 
 ---
+---
+
+## Handoff: 2026-06-12T19:33:47Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: manual
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/f2562a93-8de9-4198-8f4a-a2a47ac1d22c.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+RMC wasn't run — `--rmc` flag not passed. Want me to run it?
+
+### Git Snapshot
+- Branch: reg-events
+- Status:
+ M code/main.py
+ M docs/handoff/HANDOFF.md
+?? refs/
+- Recent commits:
+9634423 docs: fill HANDOFF 2026-06-09T12:00:39Z with real session summary
+b36724d data+test: mpc vote split 2025-2026 data and integration tests for regulatory event factors
+4971859 data: UK fiscal event binary 2000-2026 (budgets, statements, off-cycle)
+ed0c2c1 data: Ofgem quarterly price cap history 2015-2026
+48f818e feat: add mpc_rate_change, mpc_vote_split, ofgem_cap_delta, budget_event to REGISTRY
+
+### Model Summary
+(TODO: fill after compaction — 8–12 bullets)
+
+### Handoff Context (paste into next session)
+(TODO: fill after compaction — 10–20 lines of concrete resume instructions)
+
+---

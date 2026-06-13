@@ -868,6 +868,44 @@ def apply_publication_lags(df, factor_names, registry=None):
     return df_out
 
 
+def factor_health(df, factor_names, registry=None, grace=2, dead_after=6, asof=None):
+    """
+    Per-factor liveness report: months since last observation vs publication budget.
+
+    budget = pub_lag + grace months. A factor is:
+      LIVE   if months_stale <= budget
+      STALE  if budget < months_stale <= dead_after  (usable for backtest up to
+             its last observation; must not feed a nowcast)
+      DEAD   if months_stale > dead_after (would silently truncate the whole
+             backtest panel via dropna — drop from live factor set)
+
+    asof: anchor Timestamp (default df.index.max()).
+    Returns DataFrame indexed by factor: [last_obs, months_stale, budget, status].
+    """
+    registry = registry or REGISTRY
+    asof = pd.Timestamp(asof) if asof is not None else df.index.max()
+    asof_p = asof.to_period("M")
+    rows = []
+    for f in factor_names:
+        if f not in df.columns:
+            rows.append(dict(factor=f, last_obs=pd.NaT, months_stale=np.nan,
+                             budget=np.nan, status="MISSING"))
+            continue
+        s = df[f].dropna()
+        if len(s) == 0:
+            rows.append(dict(factor=f, last_obs=pd.NaT, months_stale=np.nan,
+                             budget=np.nan, status="DEAD"))
+            continue
+        last = s.index.max()
+        stale = (asof_p - last.to_period("M")).n
+        budget = int(registry.get(f, {}).get("pub_lag", 1)) + grace
+        status = ("LIVE" if stale <= budget
+                  else "STALE" if stale <= dead_after else "DEAD")
+        rows.append(dict(factor=f, last_obs=last, months_stale=stale,
+                         budget=budget, status=status))
+    return pd.DataFrame(rows).set_index("factor")
+
+
 def screen_candidates(df, target, threshold=0.001, always_keep=None):
     """
     Shapley-based candidate factor screening.

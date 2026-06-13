@@ -121,6 +121,9 @@ class BaseModel:
     # Post-fit clipping prevents runaway predictions from polluting ensembles.
     PRED_MIN = -2.0
     PRED_MAX = 20.0
+    # Nowcast staleness guard: a factor may be forward-filled at most
+    # pub_lag + FFILL_GRACE months past its last observation (H6).
+    FFILL_GRACE = 2
 
     def _fit_predict_year(self, train, test, factors, target):
         raise NotImplementedError
@@ -151,7 +154,9 @@ class BaseModel:
                     warnings.simplefilter("always")
                     preds = self._fit_predict_year(train, test, factors, target)
                 n_warns_fold = len(caught)
-            except Exception:
+            except Exception as e:
+                # C4: never delete a test year silently — coverage gaps must be loud
+                print(f"  [WARN] {self.name} {yr}: year skipped — {str(e)[:70]}")
                 continue
             n_warns += n_warns_fold
             preds = np.clip(preds, self.PRED_MIN, self.PRED_MAX)
@@ -209,15 +214,29 @@ class BaseModel:
         # Include target column so models can access it (remains NaN = unreleased)
         all_cols = list(dict.fromkeys(feat_cols + ([target] if target in df.columns else [])))
         feat_df = df[all_cols].reindex([nowcast_date])
-        ffilled  = df[all_cols].ffill().reindex([nowcast_date])
+        # Budgeted forward-fill (H6): each factor may be carried forward at most
+        # pub_lag + FFILL_GRACE months past its last observation. Beyond that it
+        # stays NaN so a dead/stale series can never silently feed the nowcast.
+        try:
+            from factors import REGISTRY as _REG
+        except Exception:
+            _REG = {}
+        budgets = {c: int(_REG.get(c, {}).get("pub_lag", 1)) + BaseModel.FFILL_GRACE
+                   for c in all_cols}
+        ffilled = pd.DataFrame(
+            {c: df[c].ffill(limit=max(budgets[c], 1)) for c in all_cols}
+        ).reindex([nowcast_date])
         row = feat_df.fillna(ffilled)
         # Target must stay NaN — it's the thing we're trying to predict
         if target in row.columns:
             row[target] = np.nan
 
         # NaN check on factor columns only (target NaN is expected)
-        if row[feat_cols].isna().any(axis=1).iloc[0]:
-            return None, nowcast_date   # still some factor genuinely unavailable
+        stale = [c for c in feat_cols if row[c].isna().iloc[0]]
+        if stale:
+            print(f"  [STALE] nowcast blocked — factors beyond ffill budget "
+                  f"(pub_lag+{BaseModel.FFILL_GRACE}m): {stale}")
+            return None, nowcast_date
 
         return row, nowcast_date
 

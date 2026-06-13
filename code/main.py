@@ -258,6 +258,71 @@ def combine_subset(bt_dict, names, label="subset"):
     return combine_static(valid)
 
 
+def combine_recursive(bt_dict, bench_bt, rho_threshold=0.5, min_hist=36, min_obs=12):
+    """
+    Walk-forward selected ensemble (leak-free successor to Combined-Absolute).
+
+    Membership for test year y is decided ONLY on backtest rows from years < y:
+      1. AR(1) gate: candidate's historical RMSE < benchmark's historical RMSE
+      2. greedy decorrelation: max |Spearman rho| of error series vs already-
+         selected members < rho_threshold (insufficient overlap blocks)
+    Equal-weight fallback over all models while history < min_hist months or
+    when no candidate passes the gate. C1: no statistic computed on year y or
+    later ever influences year-y membership.
+    """
+    cand = {n: bt for n, bt in bt_dict.items()
+            if n != "AR(1)" and bt is not None and len(bt) > 0}
+    if not cand or bench_bt is None or len(bench_bt) == 0:
+        return pd.DataFrame()
+    preds = pd.DataFrame({n: bt["pred"] for n, bt in cand.items()}).sort_index()
+    actual = bench_bt["actual"].reindex(preds.index)
+    for bt in cand.values():
+        actual = actual.fillna(bt["actual"].reindex(preds.index))
+
+    rows = []
+    for yr in sorted(preds.index.year.unique()):
+        hist = preds.index[preds.index.year < yr]
+        members = list(preds.columns)                      # fallback: all models
+        if len(hist) >= min_hist:
+            b_hist = bench_bt[bench_bt.index.year < yr]
+            ar1_rmse = (float(np.sqrt(((b_hist["actual"] - b_hist["pred"])**2).mean()))
+                        if len(b_hist) else np.nan)
+            rmse_map, errs = {}, {}
+            for n in preds.columns:
+                e = (actual.loc[hist] - preds[n].loc[hist]).dropna()
+                if len(e) >= min_obs:
+                    rmse_map[n] = float(np.sqrt((e**2).mean()))
+                    errs[n] = e
+            if np.isfinite(ar1_rmse):
+                from scipy.stats import spearmanr
+                ranked = sorted((n for n in rmse_map if rmse_map[n] < ar1_rmse),
+                                key=rmse_map.get)
+                sel = []
+                for c in ranked:
+                    if not sel:
+                        sel.append(c)
+                        continue
+                    rhos = []
+                    for s_ in sel:
+                        common = errs[c].index.intersection(errs[s_].index)
+                        if len(common) < min_obs:
+                            rhos.append(1.0)               # too little overlap: block
+                        else:
+                            r, _ = spearmanr(errs[c].loc[common], errs[s_].loc[common])
+                            rhos.append(abs(r) if np.isfinite(r) else 1.0)
+                    if max(rhos) < rho_threshold:
+                        sel.append(c)
+                if sel:
+                    members = sel
+        for idx in preds.index[preds.index.year == yr]:
+            p = preds.loc[idx, members].dropna()
+            a = actual.loc[idx]
+            if len(p) > 0 and np.isfinite(a):
+                rows.append(dict(date=idx, actual=float(a),
+                                 pred=float(p.mean()), year=yr))
+    return pd.DataFrame(rows).set_index("date") if rows else pd.DataFrame()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SPA TABLE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -734,6 +799,44 @@ def subsample_rmse(bt_dict, periods):
     return pd.DataFrame(rows).set_index("model")
 
 
+def common_sample_metrics(bt_dict, benchmark="AR(1)"):
+    """
+    Score every model on its date-intersection with the benchmark (C4).
+
+    Adds per row:
+      ar1_rmse_cs : benchmark RMSE recomputed on the SAME dates as the model
+      beats_ar1   : rmse < ar1_rmse_cs (common sample, never cross-sample)
+      coverage    : fraction of benchmark dates the model covers
+    """
+    bench = bt_dict.get(benchmark)
+    rows = []
+    for name, bt in bt_dict.items():
+        if bt is None or len(bt) == 0:
+            m = Z.score_backtest(bt, name=name)
+            m.update(ar1_rmse_cs=np.nan, beats_ar1=False, coverage=np.nan)
+            rows.append(m)
+            continue
+        if name == benchmark or bench is None or len(bench) == 0:
+            m = Z.score_backtest(bt, name=name)
+            m.update(ar1_rmse_cs=m["rmse"] if name == benchmark else np.nan,
+                     beats_ar1=False,
+                     coverage=1.0 if name == benchmark else np.nan)
+            rows.append(m)
+            continue
+        common = bt.index.intersection(bench.index)
+        m = Z.score_backtest(bt.loc[common], name=name)
+        if len(common) > 0:
+            b = bench.loc[common]
+            ar1_cs = float(np.sqrt(((b["actual"] - b["pred"])**2).mean()))
+        else:
+            ar1_cs = np.nan
+        m.update(ar1_rmse_cs=ar1_cs,
+                 beats_ar1=bool(np.isfinite(ar1_cs) and m["rmse"] < ar1_cs),
+                 coverage=round(len(common) / len(bench), 2))
+        rows.append(m)
+    return pd.DataFrame(rows).set_index("model")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start",      type=int, default=2015, help="first backtest year")
@@ -778,8 +881,30 @@ def main():
     # trim to training start
     df_raw = df_raw[df_raw.index.year >= args.train_from]
 
+    # ── factor liveness gate (H6/C4) ─────────────────────────────────────────
+    # A single dead factor truncates EVERY model's panel via _prep's dropna.
+    # Drop DEAD series loudly; flag STALE ones (nowcast ffill budget handles them).
+    health = F.factor_health(df_raw, live_facs)
+    print("\n── Factor liveness ──")
+    print(health.to_string())
+    health.to_csv(os.path.join(_DATA, "factor_health.csv"))
+    dead = health[health["status"] == "DEAD"].index.tolist()
+    if dead:
+        print(f"  ⚠ dropping DEAD factors (stale >6m — would truncate the backtest "
+              f"panel): {dead}")
+        live_facs = [f for f in live_facs if f not in dead]
+    stale_facs = health[health["status"] == "STALE"].index.tolist()
+    if stale_facs:
+        print(f"  ⚠ STALE factors (backtest OK to last obs; excluded from nowcast "
+              f"by ffill budget): {stale_facs}")
+
     # ── apply publication lags (mixed-frequency discipline) ─────────────────
     df = F.apply_publication_lags(df_raw, live_facs)
+    # regulatory event factors: 0 in periods before their data starts (no event = 0)
+    _reg_factors = ["mpc_rate_change", "mpc_vote_split", "ofgem_cap_delta", "budget_event"]
+    for _f in _reg_factors:
+        if _f in df.columns:
+            df[_f] = df[_f].fillna(0)
     df["cpi_3m_chg"] = df[target].shift(1).diff(3)
     if "cpi_3m_chg" not in live_facs:
         live_facs = live_facs + ["cpi_3m_chg"]
@@ -810,7 +935,10 @@ def main():
         print(f"\n── Factor Spearman Correlation Matrix ({len(live_facs)} factors) ──")
         print(corr_facs.round(2).to_string())
         # effective rank = sum(eigenvalues)/max(eigenvalue)
-        eigvals = np.linalg.eigvalsh(corr_facs.values)
+        # drop any all-NaN rows/cols (e.g. near-constant factors like ofgem_cap_delta)
+        corr_clean = corr_facs.dropna(how="all").dropna(axis=1, how="all").fillna(0)
+        np.fill_diagonal(corr_clean.values, 1.0)
+        eigvals = np.linalg.eigvalsh(corr_clean.values)
         eff_rank = eigvals.sum() / eigvals.max() if eigvals.max() > 0 else float("nan")
         print(f"  Effective rank (sum/max eigenvalue): {eff_rank:.1f} of {len(live_facs)}")
 
@@ -848,15 +976,13 @@ def main():
     if bt_dict.get("AR(1)") is not None and len(bt_dict["AR(1)"]) > 0:
         ar1_r = float(np.sqrt(((bt_dict["AR(1)"]["actual"] - bt_dict["AR(1)"]["pred"])**2).mean()))
 
-    def _beats_ar1(bt, threshold):
-        if bt is None or len(bt) == 0 or threshold is None:
-            return False
-        return float(np.sqrt(((bt["actual"] - bt["pred"])**2).mean())) < threshold
-
-    beating_bts = {n: bt for n, bt in bt_dict.items()
-                   if n != "AR(1)" and _beats_ar1(bt, ar1_r)}
-    bt_static  = combine_static(beating_bts)
-    bt_dynamic = combine_dynamic(beating_bts, window=12)
+    # C1: no ex-post membership gate — gating on full-backtest RMSE selected
+    # winners with future information. All models enter; equal weights (Static)
+    # and causal rolling inverse-RMSE weights (Dynamic) handle model quality.
+    member_bts = {n: bt for n, bt in bt_dict.items()
+                  if n != "AR(1)" and bt is not None and len(bt) > 0}
+    bt_static  = combine_static(member_bts)
+    bt_dynamic = combine_dynamic(member_bts, window=12)
     bt_dict["Combined-Static"]  = bt_static  if len(bt_static)  else None
     bt_dict["Combined-Dynamic"] = bt_dynamic if len(bt_dynamic) else None
     for n in ("Combined-Static", "Combined-Dynamic"):
@@ -883,36 +1009,39 @@ def main():
             superstar_names = []
         print(f"  Superstar BH-corrected (FDR 10%): {superstar_names}")
         bt_super = combine_subset(bt_dict, superstar_names)
+        # C1: members were selected on data <= selection_end, so the combo may
+        # only be scored on years AFTER the selection window
+        if len(bt_super):
+            bt_super = bt_super[bt_super.index.year > selection_end]
         bt_dict["Combined-Superstar"] = bt_super if len(bt_super) else None
         if len(bt_super):
             rmse = float(np.sqrt(((bt_super["actual"] - bt_super["pred"])**2).mean()))
-            print(f"  Combined-Superstar n={len(bt_super):3d}  RMSE={rmse:.3f}  ({superstar_names})")
+            print(f"  Combined-Superstar n={len(bt_super):3d}  RMSE={rmse:.3f}  "
+                  f"({superstar_names}; scored {selection_end + 1}+ only)")
 
-    # ── absolute combined ────────────────────────────────────────────────────
-    print("  Building error correlation matrix …")
-    err_df, corr_mat = error_corr_matrix(
-        {n: bt for n, bt in bt_dict.items()
-         if n not in ("Combined-Static","Combined-Dynamic","Combined-Superstar","AR(1)")})
-    if not corr_mat.empty:
-        uncorr_names = greedy_uncorrelated_subset(corr_mat, bt_dict, rho_threshold=0.5,
-                                                  ar1_rmse=ar1_r)
-        print(f"  Uncorrelated subset (ρ<0.5): {uncorr_names}")
-        bt_absol = combine_subset(bt_dict, uncorr_names)
-        bt_dict["Combined-Absolute"] = bt_absol if len(bt_absol) else None
-        if len(bt_absol):
-            rmse = float(np.sqrt(((bt_absol["actual"] - bt_absol["pred"])**2).mean()))
-            print(f"  Combined-Absolute   n={len(bt_absol):3d}  RMSE={rmse:.3f}")
+    # ── recursive selected ensemble (C1: leak-free Combined-Absolute successor) ─
+    # AR(1) gate + greedy error-decorrelation recomputed each year from rows
+    # strictly before that year. Replaces the full-sample-selected Combined-Absolute.
+    base_bts = {n: bt for n, bt in bt_dict.items() if not n.startswith("Combined-")}
+    bt_recur = combine_recursive(base_bts, bt_dict.get("AR(1)"),
+                                 rho_threshold=0.5, min_hist=36)
+    bt_dict["Combined-Recursive"] = bt_recur if len(bt_recur) else None
+    if bt_dict["Combined-Recursive"] is not None:
+        rmse = float(np.sqrt(((bt_recur["actual"] - bt_recur["pred"])**2).mean()))
+        print(f"  Combined-Recursive  n={len(bt_recur):3d}  RMSE={rmse:.3f}  "
+              f"(walk-forward selection, min_hist=36)")
 
     # ── METRICS TABLE ───────────────────────────────────────────────────────
     print("\n" + "═"*90)
     print("METRICS TABLE")
     print("═"*90)
-    metrics = []
-    for name, bt in bt_dict.items():
-        metrics.append(Z.score_backtest(bt, name=name))
-    mdf = pd.DataFrame(metrics).set_index("model").sort_values("rmse")
-    if ar1_r is not None:
-        mdf["beats_ar1"] = mdf["rmse"] < ar1_r
+    # C4: every model scored on its intersection with AR(1)'s dates; benchmark
+    # RMSE recomputed per model on the same dates; coverage made explicit.
+    mdf = common_sample_metrics(bt_dict, benchmark="AR(1)").sort_values("rmse")
+    low_cov = mdf.index[(mdf["coverage"].fillna(1.0) < 0.9)].tolist()
+    if low_cov:
+        print(f"\n  ⚠ coverage <90% of benchmark dates — RMSE ranks not comparable "
+              f"across rows: {low_cov}")
     # add Giacomini-White conditional predictability test columns
     if bt_dict.get("AR(1)") is not None and len(bt_dict["AR(1)"]) > 0:
         bench_gw = bt_dict["AR(1)"]
@@ -934,7 +1063,8 @@ def main():
             gw_ps[name]    = round(p, 3) if not np.isnan(p) else float("nan")
         mdf["gw_stat"] = pd.Series(gw_stats)
         mdf["gw_p"]    = pd.Series(gw_ps)
-    cols = ["rmse", "mae", "dir_acc", "beats_ar1", "mz_slope", "mz_intercept", "mz_pval",
+    cols = ["rmse", "ar1_rmse_cs", "beats_ar1", "coverage", "mae", "dir_acc",
+            "mz_slope", "mz_intercept", "mz_pval",
             "error_var", "mape", "bias", "gw_stat", "gw_p", "n"]
     print_cols = [c for c in cols if c in mdf.columns]
     print(mdf[print_cols].to_string(
@@ -942,7 +1072,7 @@ def main():
     if ar1_r is not None:
         poor = mdf[mdf["rmse"] > 2.0 * ar1_r].index.tolist()
         if poor:
-            print(f"\n  ⚠ Models >2\xd7 AR(1) RMSE (excluded from ensembles): {poor}")
+            print(f"\n  ⚠ Models >2\xd7 AR(1) RMSE: {poor}")
 
     # ── SUBSAMPLE RMSE ───────────────────────────────────────────────────────
     sub_periods = [("2015-19", 2015, 2019), ("2020-21", 2020, 2021),
@@ -980,7 +1110,7 @@ def main():
     _, full_corr = error_corr_matrix(
         {n: bt for n, bt in bt_dict.items()
          if n not in ("Combined-Static","Combined-Dynamic","Combined-Superstar",
-                      "Combined-Absolute","AR(1)")})
+                      "Combined-Recursive","AR(1)")})
     if not full_corr.empty:
         print(full_corr.round(2).to_string())
         uncorr = greedy_uncorrelated_subset(full_corr, bt_dict, rho_threshold=0.5,
