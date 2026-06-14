@@ -75,9 +75,9 @@ class TestRollingWindow(unittest.TestCase):
 class TestAllModels(unittest.TestCase):
     def test_all_models_count(self):
         models = Z.all_models()
-        self.assertEqual(len(models), 6)  # residual framework: AutoARIMA baseline + HMM, MS-DFM, DFM-k2, MIDAS, DLM(=UCM)
+        self.assertEqual(len(models), 7)  # residual framework: AutoARIMA + BVAR, DFM, UCM, HMM, TVP, HuberNet
         names = {m.name for m in models}
-        self.assertEqual(names, {"AutoARIMA", "HMM", "MS-DFM", "DFM-k2", "MIDAS", "UCM"})
+        self.assertEqual(names, {"AutoARIMA", "BVAR", "DFM", "UCM", "HMM", "TVP", "HuberNet"})
 
     def test_experimental_models_exist(self):
         exp = Z.experimental_models()

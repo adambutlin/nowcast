@@ -140,7 +140,7 @@ All fixes implemented and pushed (commit 57843df). 31/32 models producing valid 
 **To retrain from scratch:**
 ```bash
 cd /Users/Adam/Documents/home/quant/ramm-lgbm
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --train-from 1992 2>&1 | tee nowcast_cpi_run.log
+FRED_API_KEY=<FRED_API_KEY> .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --train-from 1992 2>&1 | tee nowcast_cpi_run.log
 ```
 
 **Live factor availability (9 working):** oil_brent, gbpusd, uk_be5, vix, gas_eu (TTF blend), oil_vol_6m, gbpusd_vol_6m, uk_rents_lag1 (core), uk_vacancies (candidate). Excluded: uk_rents (collinear with uk_rents_lag1), uk_cpih, uk_services_cpi (CPI predicting CPI). Failing fetches: us_ism_pmi (FRED NAPM removed), uk_house_prices (ONS HPSSA dbnomics down), uk_paye (ONS RTI dbnomics down).
@@ -330,12 +330,12 @@ Both backtests complete. Generated nowcast_history_2.png (41 models, 1992 traini
 **To re-run standard backtest (canonical, 1992 training):**
 ```bash
 cd /Users/Adam/Documents/home/quant/ramm-lgbm
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --train-from 1992 2>&1 | tee /tmp/nowcast_v2.log
+FRED_API_KEY=<FRED_API_KEY> .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --train-from 1992 2>&1 | tee /tmp/nowcast_v2.log
 ```
 
 **To re-run long backtest (1956 training):**
 ```bash
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --train-from 1956 --target cpi_yoy_long 2>&1 | tee /tmp/nowcast_long.log
+FRED_API_KEY=<FRED_API_KEY> .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --train-from 1956 --target cpi_yoy_long 2>&1 | tee /tmp/nowcast_long.log
 ```
 
 **Standard backtest key results (from /tmp/nowcast_v2.log):**
@@ -405,7 +405,7 @@ ps aux | grep nowcast_cpi         # check if still running
 
 **To re-run after completion:**
 ```bash
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 PYTHONUNBUFFERED=1 \
+FRED_API_KEY=<FRED_API_KEY> PYTHONUNBUFFERED=1 \
   .venv/bin/python -W ignore -u nowcast_cpi.py --start 2015 --end 2024 --train-from 1992 --rmc \
   > /tmp/nowcast_1992.log 2>&1 &
 ```
@@ -465,7 +465,7 @@ Added SARIMAX_Model, VAR_Model, AutoARIMA to uk_model_zoo.py and all_models() (n
 
 **Run command:**
 ```bash
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 PYTHONUNBUFFERED=1 .venv/bin/python -W ignore -u nowcast_cpi.py --start 2015 --end 2024 --train-from 1992 2>&1 | tee /tmp/fullrun.log
+FRED_API_KEY=<FRED_API_KEY> PYTHONUNBUFFERED=1 .venv/bin/python -W ignore -u nowcast_cpi.py --start 2015 --end 2024 --train-from 1992 2>&1 | tee /tmp/fullrun.log
 ```
 
 ---
@@ -506,7 +506,7 @@ Full 21-model backtest complete (2015–2024, blind test 2025+). Best: Combined-
 
 **To re-run full backtest:**
 ```bash
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 PYTHONUNBUFFERED=1 .venv/bin/python -W ignore -u nowcast_cpi.py --start 2015 --end 2024 --train-from 1992 2>&1 | tee /tmp/fullrun.log
+FRED_API_KEY=<FRED_API_KEY> PYTHONUNBUFFERED=1 .venv/bin/python -W ignore -u nowcast_cpi.py --start 2015 --end 2024 --train-from 1992 2>&1 | tee /tmp/fullrun.log
 ```
 
 **Current RMSE table (2015–2024, from /tmp/fullrun.log):**
@@ -631,11 +631,11 @@ FRED_API_KEY=<key> .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --end 
 ```bash
 cd /Users/Adam/Documents/home/quant/ramm-lgbm
 # Fresh full run:
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --end 2024 --train-from 1992
+FRED_API_KEY=<FRED_API_KEY> .venv/bin/python -W ignore nowcast_cpi.py --start 2015 --end 2024 --train-from 1992
 # Regenerate plot:
 .venv/bin/python plot_nowcast_history.py
 # Tests:
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -m pytest test_nowcast_cpi.py -v
+FRED_API_KEY=<FRED_API_KEY> .venv/bin/python -m pytest test_nowcast_cpi.py -v
 ```
 
 ---
@@ -678,7 +678,7 @@ All steps 1–5 implemented, full backtest run, folder merged into nowcast/. Com
 **Run command:**
 ```bash
 cd /Users/Adam/Documents/home/quant/nowcast
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore code/nowcast_cpi.py \
+FRED_API_KEY=<FRED_API_KEY> .venv/bin/python -W ignore code/nowcast_cpi.py \
   --start 2015 --end 2024 --train-from 1992 \
   --rmc --rmc-methods dfm_k2 --rmc-top-k 8
 ```
@@ -755,7 +755,7 @@ d0777c7 Merge branch 'main' of https://github.com/adambutlin/nowcaster
 **Run full backtest:**
 ```bash
 cd /Users/Adam/Documents/home/quant/nowcast
-FRED_API_KEY=23615c784b776fe81c097fbef15bd6d2 .venv/bin/python -W ignore code/main.py \
+FRED_API_KEY=<FRED_API_KEY> .venv/bin/python -W ignore code/main.py \
   --start 2015 --end 2024 --train-from 1992
 ```
 
@@ -1177,9 +1177,107 @@ ed0c2c1 data: Ofgem quarterly price cap history 2015-2026
 48f818e feat: add mpc_rate_change, mpc_vote_split, ofgem_cap_delta, budget_event to REGISTRY
 
 ### Model Summary
-(TODO: fill after compaction — 8–12 bullets)
+- **Session goal**: hostile model review → downstream rates repricing pipeline → residual CPI framework
+- **Forensic audit (H6/C4/C1 remediation)**: `combine_recursive()` in `main.py` — walk-forward ensemble membership from pre-year history only (C1 fix); `common_sample_metrics()` benchmarks RMSE on intersection dates (C4 fix); H6 ffill staleness guard already in `BaseModel._nowcast_row` (pub_lag + FFILL_GRACE=2 months)
+- **Rates pipeline created**: `code/rates/` package (~430 LOC) with `config.py`, `sources.py`, `event_panel.py`, `gates.py`, `stage1.py`, `market_implied.py`, `consensus.py`, `model_sweep.py`, `regime.py`, `prod_signal.py`, `risk.py`, `production.py`, `run_production.py`; BoE 2.5Y RPI curve live via requests+certifi; consensus proxy via AutoARIMA/AR1 splice
+- **Stage 1 mechanical identity guard**: BoE 2.5Y RPI anchor → forecast_gap ≈ CPI level → slope_rel_change_vs_placebo=3% → guard returns `INVALID_MECHANICAL`; all models fail Stage 1 (gap confounds level vs change)
+- **Hostile model review**: SHAP screen using `imf_all_commodity` (0.068) and `gas_eu` (0.020) as top factors pre-2015; reg-event factors (mpc_rate_change, mpc_vote_split, ofgem_cap_delta, budget_event) show SHAP=0 pre-2015 (coverage artifact — Ofgem cap data starts 2018)
+- **Residual framework established**: AutoARIMA as persistence baseline; residual `r_t = CPI_t − AutoARIMA_forecast_t`; BVAR, DFM, UCM, HMM, TVP, HuberNet trained on `r_t`; final RMSE = residual-model RMSE; baseline = "predict r=0" = AutoARIMA RMSE
+- **Factors pinned**: `oil_brent`, `gas_eu`, `uk_quarterly_gdp` (FRED NGDPRSAXDCGBQ — switched from stale CLVMNACSCAB1GQUK ending 2020), `imf_all_commodity` (FRED PALLFNFINDEXM, logret), plus 4 reg-event CSVs; `global_supply_chain_pressure` HTML-blocked by NYFed sandbox, unavailable
+- **Multiple retrains run (retrain1–4)**: iterating model set; final set before this session's end = HMM + MS-DFM + DFM-k2 + MIDAS + DLM(UCM) on AutoARIMA residual vs AutoARIMA baseline
+- **Branch renamed to `optimise`**: was `alpha-gen` (created off main after merging reg-events)
 
 ### Handoff Context (paste into next session)
-(TODO: fill after compaction — 10–20 lines of concrete resume instructions)
+**Branch:** `optimise` (off main). **Residual framework operational. Latest run: retrain4.**
+
+**Active background job:** `retrain5.log` may still be running — check before assuming completion.
+
+**Pinned factor set** (used in all retrains):
+```
+oil_brent, gas_eu, uk_quarterly_gdp, imf_all_commodity, global_supply_chain_pressure (unavailable)
++ mpc_rate_change, mpc_vote_split, ofgem_cap_delta, budget_event (CSVs)
+```
+
+**Run retrain:**
+```bash
+cd /Users/Adam/Documents/home/quant/nowcast
+FRED_API_KEY=<key> .venv/bin/python code/retrain_pinned.py > /tmp/retrain5.log 2>&1
+```
+
+**Pending decision**: user requested "rerun residual CPI test against AR(1), AR(2), AutoARIMA benchmarks using BVAR/DFM/UCM/HMM/TVP/HuberNet" — this was the last message before session ended.
+
+**CAVEMAN MODE** active (full level).
+
+---
+---
+
+## Handoff: 2026-06-14T12:01:26Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: auto
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/447bac3f-24b8-4c9d-ba02-2b2d15fa16b4.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+You've hit your session limit · resets 1pm (Europe/London)
+
+### Git Snapshot
+- Branch: optimise
+- Status:
+ M code/retrain_pinned.py
+ M code/tests/test_main.py
+ M code/uk_model_zoo.py
+ M docs/handoff/HANDOFF.md
+?? refs/
+- Recent commits:
+1c63a43 residual framework: add reg-event factors; models HMM/MS-DFM/DFM-k2/MIDAS/DLM(UCM)
+e6ab766 residual framework: models fit CPI − AutoARIMA; drop house prices, add brent
+d25f185 config: 5-model set (drop DFM family), current GDP series, NYFed GSCPI + IMF commodity
+4bd443f config: curate model set (6) + new factor entries + --factors pin
+0fd27c4 docs: update README/STATE/PROCESS/SPEC for remediation + rates pipeline
+
+### Model Summary
+- **retrain5 completed (EXIT=0)**: three-benchmark residual retrain — AR(1)/AR(2)/AutoARIMA benchmarks; BVAR/DFM/UCM/HMM/TVP/HuberNet as residual models on `CPI − AutoARIMA` residual; 2015–2024 walk-forward
+- **retrain5 RMSE table**: Combined-Dynamic 0.4395, HMM 0.4570, BVAR 0.4588, UCM 0.4616, HuberNet 0.4681 all beat AutoARIMA baseline 0.4687; TVP 0.4750 (below baseline); DFM 0.6128 (only 60 obs — SVD failures 2015–2019); AR(2) 0.4915, AR(1) 0.5090 as benchmarks
+- **SHAP pre-2015**: `imf_all_commodity` dominant (0.068); `gas_eu` 0.020; reg-event factors SHAP=0 pre-2015 (coverage artifact — Ofgem/MPC data starts 2015–2018)
+- **Model zoo updated** (`code/uk_model_zoo.py`, `code/tests/test_main.py`): `all_models()` = 7 models (AutoARIMA + BVAR/DFM/UCM/HMM/TVP/HuberNet); test asserts 7-model count and exact name set
+- **`code/retrain_pinned.py` rewritten**: three benchmarks (AR1/AR2/AutoARIMA) via `ar_backtest()` walk-forward OLS; residual models on RESID column; Combined-Dynamic over residual-beaters; saves `data/nowcast_cpi_backtest.csv`, `data/nowcast_cpi_metrics.csv`, `plots/retrain_pinned.png`
+- **comprehensive sweep launched** (`code/sweep_residual_regime.py`, background job be3gnx8pb): Exercise 1 (3 residuals × 6 models × 4 robustness windows), Exercise 2 (9 regime+factor combos × 4 windows) — completed EXIT=0 during this session
+- **Branch `optimise`**: 4 uncommitted files (retrain_pinned.py, test_main.py, uk_model_zoo.py, HANDOFF.md); not yet committed
+
+### Handoff Context (paste into next session)
+**Branch:** `optimise`. **Sweep complete. Results in `data/residual_sweep/` and `data/regime_factor_sweep/`.**
+
+**Read sweep results:**
+```bash
+cat data/residual_sweep/benchmark_model_table.csv
+cat data/residual_sweep/robustness_table.csv
+cat data/regime_factor_sweep/combination_table.csv
+cat data/regime_factor_sweep/final_ranking.csv
+```
+
+**Uncommitted changes** (commit before switching branches):
+```bash
+git add code/retrain_pinned.py code/tests/test_main.py code/uk_model_zoo.py docs/handoff/HANDOFF.md code/sweep_residual_regime.py
+git commit -m "sweep: three-benchmark residual sweep + regime/factor combination test"
+```
+
+**Run retrain5 again** (if needed):
+```bash
+FRED_API_KEY=<key> .venv/bin/python code/retrain_pinned.py > /tmp/retrain5.log 2>&1
+```
+
+**Run comprehensive sweep** (already done, re-run if needed):
+```bash
+FRED_API_KEY=<key> .venv/bin/python code/sweep_residual_regime.py > /tmp/sweep.log 2>&1
+```
+
+**Key findings from retrain5**: HMM + BVAR + UCM + HuberNet beat AutoARIMA baseline on full 2015–2024 sample. DFM unreliable (SVD failures). TVP fails to beat baseline (persistence in disguise). `imf_all_commodity` is the dominant factor. Reg-event factors need post-2015 evaluation.
+
+**CAVEMAN MODE** active (full level).
 
 ---

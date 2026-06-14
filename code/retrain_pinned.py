@@ -55,18 +55,42 @@ df[RESID] = (actual - aa_f).reindex(df.index)         # residual where AA foreca
 print(f"  residual defined {df[RESID].dropna().index.min().date()} → "
       f"{df[RESID].dropna().index.max().date()}  (std={df[RESID].std():.3f})")
 
-# AutoARIMA baseline RMSE on the test window (= 'predict residual 0')
+# ── Benchmarks: AR(1), AR(2), AutoARIMA standalone CPI RMSE on test window ───
+def ar_backtest(series, p, start, end):
+    """Walk-forward OLS AR(p): yearly refit on data<yr, 1-step with realized lags."""
+    s = series.dropna(); rows = []
+    for yr in range(start, end + 1):
+        tr = s[s.index.year < yr]; te = s[s.index.year == yr]
+        if len(tr) < 30 or len(te) == 0:
+            continue
+        y = tr.values; n = len(y)
+        X = np.column_stack([np.ones(n - p)] + [y[p - l:n - l] for l in range(1, p + 1)])
+        beta = np.linalg.lstsq(X, y[p:], rcond=None)[0]
+        hist = list(y)
+        for idx in te.index:
+            xr = np.array([1.0] + [hist[-l] for l in range(1, p + 1)])
+            rows.append((idx, float(s.loc[idx]), float(xr @ beta)))
+            hist.append(float(s.loc[idx]))
+    return pd.DataFrame(rows, columns=["date", "actual", "pred"]).set_index("date")
+
 aa_test = aa_bt[(aa_bt.index.year >= START) & (aa_bt.index.year <= END)]
 base_rmse = float(np.sqrt(((aa_test["actual"] - aa_test["pred"])**2).mean()))
-print(f"  AutoARIMA baseline CPI RMSE {START}-{END} = {base_rmse:.4f}  (n={len(aa_test)})")
+def _rmse(bt): return float(np.sqrt(((bt["actual"] - bt["pred"])**2).mean()))
+ar1_bt = ar_backtest(df[TARGET], 1, START, END)
+ar2_bt = ar_backtest(df[TARGET], 2, START, END)
+ar1_rmse, ar2_rmse = _rmse(ar1_bt), _rmse(ar2_bt)
+print(f"  BENCHMARKS CPI RMSE {START}-{END}: "
+      f"AR(1)={ar1_rmse:.4f}  AR(2)={ar2_rmse:.4f}  AutoARIMA={base_rmse:.4f}")
 
 # ── Stage 2: residual models on the factors ─────────────────────────────────
-resid_models = [Z.HMM(), Z.MS_DFM(), Z.DFM2(), Z.MIDAS(), Z.UCM()]   # DLM = UCM
+resid_models = [Z.BVAR(), Z.DFM(), Z.UCM(), Z.HMM(), Z.TVP(), Z.HuberNet()]
 print(f"\nStage 2: training {len(resid_models)} residual models on {len(live)} factors …")
 def final_rmse(bt):   # residual-RMSE == final-CPI-RMSE by construction
     return float(np.sqrt(((bt["actual"] - bt["pred"])**2).mean())) if bt is not None and len(bt) else np.nan
-bt_dict, rows = {}, [dict(model="AutoARIMA (baseline)", cpi_rmse=base_rmse,
-                         n=len(aa_test), beats_baseline=False)]
+bt_dict = {}
+rows = [dict(model="AR(1) [bench]",      cpi_rmse=ar1_rmse, n=len(ar1_bt), beats_AA=ar1_rmse < base_rmse),
+        dict(model="AR(2) [bench]",      cpi_rmse=ar2_rmse, n=len(ar2_bt), beats_AA=ar2_rmse < base_rmse),
+        dict(model="AutoARIMA [bench]",  cpi_rmse=base_rmse, n=len(aa_test), beats_AA=False)]
 for m in resid_models:
     try:
         bt = m.backtest(df, live, RESID, start_year=START, end_year=END)
@@ -76,7 +100,7 @@ for m in resid_models:
     bt_dict[m.name] = bt
     r = final_rmse(bt)
     rows.append(dict(model=m.name, cpi_rmse=r, n=(len(bt) if bt is not None else 0),
-                     beats_baseline=(r < base_rmse) if np.isfinite(r) else False))
+                     beats_AA=(r < base_rmse) if np.isfinite(r) else False))
 
 # Combined-Dynamic over residual models beating baseline (inverse-RMSE weighting)
 import main as NC
@@ -86,10 +110,10 @@ cd = NC.combine_dynamic(beaters, window=12) if beaters else None
 if cd is not None and len(cd):
     bt_dict["Combined-Dynamic"] = cd
     rows.append(dict(model="Combined-Dynamic", cpi_rmse=final_rmse(cd),
-                     n=len(cd), beats_baseline=final_rmse(cd) < base_rmse))
+                     n=len(cd), beats_AA=final_rmse(cd) < base_rmse))
 
 mdf = pd.DataFrame(rows).set_index("model").sort_values("cpi_rmse")
-print("\n" + "="*60 + "\nRESIDUAL-FRAMEWORK CPI RMSE (final = AutoARIMA + residual model)\n" + "="*60)
+print("\n" + "="*60 + "\nRESIDUAL CPI RMSE — 3 benchmarks + residual models (final = AutoARIMA + residual)\n" + "="*60)
 print(mdf.round(4).to_string())
 print(f"\n  (baseline = AutoARIMA alone = {base_rmse:.4f}; a model earns its place iff cpi_rmse < baseline)")
 
@@ -129,7 +153,7 @@ try:
     ax.plot(aa_test.index, aa_test["actual"], "k-", lw=2, label="actual CPI YoY")
     ax.plot(aa_test.index, aa_test["pred"], "--", color="grey", lw=1.2,
             label=f"AutoARIMA baseline ({base_rmse:.3f})")
-    for n in ["Combined-Dynamic", "HMM", "MS-DFM", "DFM-k2", "MIDAS", "UCM"]:
+    for n in ["Combined-Dynamic", "BVAR", "DFM", "UCM", "HMM", "TVP", "HuberNet"]:
         b = bt_dict.get(n)
         if b is not None and len(b):
             ax.plot(b.index, aa_f.reindex(b.index) + b["pred"], lw=1, alpha=0.8,
