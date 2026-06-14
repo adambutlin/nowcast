@@ -185,3 +185,24 @@ WHICH model to use per-regime can outperform letting the model handle it interna
 - [ ] Post-1992 vs post-2005 training window expansion test
 - [ ] Shapley factor screening in factors.py (keep candidates above threshold)
 - [ ] Push updated files to adambutlin/nowcast
+
+---
+
+## 2026-06-14 — intramonth system + hostile ensemble review
+
+- Built `code/intramonth/` — intramonth (T-30…T-1) regime-dependent nowcasting:
+  causal HF as-of panel (`hf_data.py`, `panel.py`), multilayer stack (`stack.py`:
+  AutoARIMA + BVAR/TVP/MIDAS), HMM regime posteriors (`regime.py`),
+  regime+horizon weights (`weights.py`), probabilistic scenario tree (`scenarios.py`),
+  forecast evolution (`evolution.py`), attribution (`attribution.py`), runner (`run.py`).
+  Targets configurable (`targets.py`: headline/core/services × YoY/MoM).
+- **Hostile ensemble review (`ensemble_review.py`):** flat vs performance vs regime
+  weighting, walk-forward 2018–2024 at T-1, RMSE + Diebold–Mariano.
+  - RMSE: AutoARIMA 0.5086, flat 0.5080, perf 0.5122, **regime 0.5185 (worst)**.
+  - DM: regime vs perf −1.05 (p=0.30), vs flat −0.87 (p=0.39), vs AutoARIMA −0.47 (p=0.64).
+  - Pre-2020: all four identical (0.1772) — residual models collapse to AutoARIMA.
+  - **Verdict:** regime weighting does not earn its place as alpha; the regime +
+    scenario layer is interpretation/communication only. Validated point forecast =
+    `AutoARIMA + factor residual`.
+- Tests: `code/tests/test_intramonth.py` (causal HF, regime/weight/scenario coherence,
+  switchability, live integration).

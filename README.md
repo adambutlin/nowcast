@@ -4,7 +4,20 @@ UK CPI YoY nowcasting (13 operational + 9 experimental model zoo, 38 live
 factors, mixed-frequency pub-lag discipline, regime identification, ensemble
 combination, regime-model-combine) **plus** a downstream rates-repricing research
 pipeline (`code/rates/`) that tests whether the nowcast carries information beyond
-consensus and can be turned into a UK 2Y gilt signal.
+consensus and can be turned into a UK 2Y gilt signal, **plus** an intramonth
+(T-30…T-1) regime-dependent nowcasting system (`code/intramonth/`).
+
+**Intramonth system (`code/intramonth/`):** causal high-frequency as-of panel
+(daily energy/FX/vol truncated to month-end − k days), multilayer stack
+(AutoARIMA baseline + BVAR/TVP/MIDAS residual models), HMM regime posteriors,
+regime+horizon model weights, and a probabilistic scenario tree (base /
+normalisation / shock). Run: `PYTHONPATH=code python -m intramonth.run`.
+
+> **Hostile verdict (`code/intramonth/ensemble_review.py`):** regime weighting does
+> **not** beat flat-equal weighting or AutoARIMA alone OOS (Diebold–Mariano rejects
+> nothing; regime-weighted RMSE 0.5185 > flat 0.5080 > AutoARIMA 0.5086). The regime
+> + scenario layer is **interpretation/communication, not an alpha source** — the
+> validated point forecast is `AutoARIMA + factor residual`.
 
 **Documentation:**
 - [docs/STATE.md](docs/STATE.md) — current results, factor matrix, rates pipeline status, pending work

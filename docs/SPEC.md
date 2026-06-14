@@ -249,3 +249,33 @@ No deployable edge on current free data. Stage 1 vs univariate consensus passes 
 is tiny (OOS R²≈0.05) and fails pre-2020; Stage 2 / production repricing OOS R² is
 negative (≈−0.28); the risk layer suppresses trading (latest live rec FLAT).
 Decisive next test requires point-in-time survey consensus (`data/consensus_cpi.csv`).
+
+---
+
+## 11. Intramonth regime-dependent nowcasting (`code/intramonth/`)
+
+**Goal:** nowcast UK CPI at forecast origins T-30…T-1 (calendar days before the
+reference month-end), letting daily high-frequency data accrue intramonth.
+
+**Layers:** (1) AutoARIMA baseline; (2) BVAR factor residual; (3) TVP; (4) MIDAS on
+HF as-of features; (5) HMM 3-state regime detector. Residual framework: layers 2-4
+predict `CPI − AutoARIMA`.
+
+**Causality:** HF features at origin T-k use only daily rows ≤ (month_end − k days)
+(`hf_data.asof_features`); monthly factors are pub-lagged; standardization is
+walk-forward. Future-injection-invariance is unit-tested.
+
+**Weights:** `w ∝ Σ_r post[r]·softmax(−RMSE_{m,r}/τ)·horizon_prior(k)` — regime- and
+horizon-conditional, half-life decayed. Sums to 1.
+
+**Scenario tree:** base / normalisation / shock (+ surprise tails) from the regime
+posterior + HF momentum; points demeaned under the posterior so the probability-
+weighted mean equals the model nowcast (coherence, not a fan chart).
+
+### 11.1 Verdict (hostile ensemble review)
+Regime weighting does **not** improve OOS RMSE vs flat-equal or AutoARIMA alone
+(`ensemble_review.py`: regime 0.5185 > flat 0.5080 ≈ AutoARIMA 0.5086; Diebold–Mariano
+rejects nothing, all p>0.29). The HF→regime mapping has near-zero OOS skill outside the
+2022/23 energy shock. **The regime + scenario apparatus is an interpretation /
+communication layer, not an alpha source.** The deployable point forecast is
+`AutoARIMA + factor residual`; the scenario tree explains it but does not beat it.

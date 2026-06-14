@@ -1,6 +1,24 @@
 # STATE — UK CPI Nowcast Project
 
-*Last updated: 2026-06-13*
+*Last updated: 2026-06-14*
+
+> **2026-06-14 — intramonth system + hostile ensemble review (merged to `main`).**
+> Added `code/intramonth/` — an intramonth (T-30…T-1) regime-dependent nowcasting
+> system: causal HF as-of panel, multilayer model stack (AutoARIMA + BVAR/TVP/MIDAS),
+> HMM regime posteriors, regime+horizon weights, probabilistic scenario tree.
+>
+> **Hostile finding (decisive — `code/intramonth/ensemble_review.py`):** regime
+> weighting does **NOT** improve OOS RMSE. Walk-forward 2018–2024 at T-1, the
+> regime-weighted ensemble (0.5185) is **worse** than flat-equal (0.5080), plain
+> performance weighting (0.5122), and AutoARIMA alone (0.5086). Diebold–Mariano
+> rejects nothing: regime vs perf DM=−1.05 (p=0.30), vs flat DM=−0.87 (p=0.39), vs
+> AutoARIMA DM=−0.47 (p=0.64). Pre-2020 all four schemes are identical (0.1772) — the
+> residual models collapse to AutoARIMA in calm periods.
+> **Conclusion:** the regime + scenario apparatus is an **interpretation / communication
+> layer, not an alpha source.** Production point forecast = AutoARIMA + factor residual;
+> the regime/scenario tree is decoration on top, used to *explain* the nowcast, not to
+> beat it. A separate review (branch `regimes`, since dropped) showed the HF→regime
+> mapping itself has near-zero OOS skill outside the 2022/23 energy shock.
 
 > **2026-06-12 — backtest-validity remediation (commit `518f528`, merged to `main`).**
 > Fixed three audit findings that invalidated reported OOS performance:
