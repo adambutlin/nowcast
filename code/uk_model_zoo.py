@@ -1842,11 +1842,11 @@ def score_backtest(bt, name="model"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def all_models():
-    """Operational model zoo (2026-06-13, user-curated, residual framework):
-    AutoARIMA is the persistence baseline; TVP, DFM, MIDAS, BVAR, HuberNet are
-    the residual models (trained on CPI − AutoARIMA in retrain_pinned.py)."""
+    """Operational model zoo (2026-06-14, user-curated, residual framework):
+    AutoARIMA is the persistence baseline; HMM, MS-DFM, DFM-k2, MIDAS, DLM(=UCM)
+    are the residual models (trained on CPI − AutoARIMA in retrain_pinned.py)."""
     return [
-        AutoARIMA(), TVP(), DFM(), MIDAS(), BVAR(), HuberNet(),
+        AutoARIMA(), HMM(), MS_DFM(), DFM2(), MIDAS(), UCM(),
     ]
 
 

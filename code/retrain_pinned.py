@@ -25,6 +25,8 @@ _DATA  = os.path.join(_ROOT, "data"); _PLOTS = os.path.join(_ROOT, "plots")
 TARGET = "cpi_yoy"; RESID = "cpi_resid"
 PINNED = ["oil_brent", "gas_eu", "uk_quarterly_gdp",
           "imf_all_commodity", "global_supply_chain_pressure"]
+REG = ["mpc_rate_change", "mpc_vote_split", "ofgem_cap_delta", "budget_event"]  # reg-event factors
+PINNED = PINNED + REG
 START, END, TRAIN_FROM, AA_START = 2015, 2024, 1997, 2001
 
 print("Fetching pinned factors + target …")
@@ -38,6 +40,10 @@ print(f"  available factors: {live}")
 
 df_raw = df_raw[df_raw.index.year >= TRAIN_FROM]
 df = F.apply_publication_lags(df_raw, live)
+# reg-event factors: 0 in periods before their data starts (no event = 0)
+for _f in REG:
+    if _f in df.columns:
+        df[_f] = df[_f].fillna(0)
 
 # ── Stage 1: causal AutoARIMA forecast over the whole sample → residual ──────
 print(f"\nStage 1: AutoARIMA walk-forward forecast ({AA_START}-{END}) …")
@@ -55,7 +61,7 @@ base_rmse = float(np.sqrt(((aa_test["actual"] - aa_test["pred"])**2).mean()))
 print(f"  AutoARIMA baseline CPI RMSE {START}-{END} = {base_rmse:.4f}  (n={len(aa_test)})")
 
 # ── Stage 2: residual models on the factors ─────────────────────────────────
-resid_models = [Z.TVP(), Z.DFM(), Z.MIDAS(), Z.BVAR(), Z.HuberNet()]
+resid_models = [Z.HMM(), Z.MS_DFM(), Z.DFM2(), Z.MIDAS(), Z.UCM()]   # DLM = UCM
 print(f"\nStage 2: training {len(resid_models)} residual models on {len(live)} factors …")
 def final_rmse(bt):   # residual-RMSE == final-CPI-RMSE by construction
     return float(np.sqrt(((bt["actual"] - bt["pred"])**2).mean())) if bt is not None and len(bt) else np.nan
@@ -123,7 +129,7 @@ try:
     ax.plot(aa_test.index, aa_test["actual"], "k-", lw=2, label="actual CPI YoY")
     ax.plot(aa_test.index, aa_test["pred"], "--", color="grey", lw=1.2,
             label=f"AutoARIMA baseline ({base_rmse:.3f})")
-    for n in ["Combined-Dynamic", "TVP", "DFM", "MIDAS", "BVAR", "HuberNet"]:
+    for n in ["Combined-Dynamic", "HMM", "MS-DFM", "DFM-k2", "MIDAS", "UCM"]:
         b = bt_dict.get(n)
         if b is not None and len(b):
             ax.plot(b.index, aa_f.reindex(b.index) + b["pred"], lw=1, alpha=0.8,
