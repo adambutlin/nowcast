@@ -1842,14 +1842,11 @@ def score_backtest(bt, name="model"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def all_models():
-    """Operational model zoo (2026-06-13, user-curated): 5 base models.
-    AutoARIMA (univariate baseline), ElasticNet (robust linear), UCM (latent
-    state-space), TVP (time-varying Kalman), MIDAS (mixed-frequency).
-    Combined-Dynamic ensemble is built in main.py from those beating AR(1).
-    Dropped: the DFM family incl DFM-k2 (UCM is the latent-SS pick), plus BVAR,
-    BridgeEq, MedianElasticNet, HuberNet, PCR, SARIMAX."""
+    """Operational model zoo (2026-06-13, user-curated, residual framework):
+    AutoARIMA is the persistence baseline; TVP, DFM, MIDAS, BVAR, HuberNet are
+    the residual models (trained on CPI − AutoARIMA in retrain_pinned.py)."""
     return [
-        AutoARIMA(), ElasticNet(), UCM(), TVP(), MIDAS(),
+        AutoARIMA(), TVP(), DFM(), MIDAS(), BVAR(), HuberNet(),
     ]
 
 
