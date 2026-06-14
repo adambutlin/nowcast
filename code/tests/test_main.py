@@ -111,9 +111,11 @@ class TestElasticNet(unittest.TestCase):
         }, index=idx)
         return df
 
-    def test_elastic_net_in_all_models(self):
-        names = [m.name for m in Z.all_models()]
-        self.assertIn("ElasticNet", names)
+    def test_elastic_net_available(self):
+        # ElasticNet was removed from the curated residual all_models() set but
+        # remains a usable model class (used by the intramonth U-MIDAS layer).
+        self.assertTrue(hasattr(Z, "ElasticNet"))
+        self.assertEqual(Z.ElasticNet().name, "ElasticNet")
 
     def test_elastic_net_backtest_runs(self):
         df = self._make_df()
