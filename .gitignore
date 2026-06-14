@@ -13,3 +13,7 @@ logs/
 *_nowcast.csv
 *.log
 *.png
+
+# Secrets — never commit
+.env
+.env.*
