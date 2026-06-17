@@ -30,8 +30,18 @@ PINNED = ["oil_brent", "gas_eu", "uk_quarterly_gdp", "imf_all_commodity",
           "uk_ppi_input", "deep_sea_freight"]   # mpc_vote_split+budget_event dropped (SHAP dead weight)
 REG = ["mpc_rate_change", "ofgem_cap_delta"]
 STAGE2 = [("bvar", Z.BVAR), ("tvp", Z.TVP), ("midas", Z.MIDAS)]   # TVP reinstated; weight via WEIGHTS
-WEIGHTS = {"bvar": 1/3, "tvp": 1/3, "midas": 1/3}   # default equal; see weight_sweep.py
+WEIGHTS = {"bvar": 0.375, "tvp": 0.25, "midas": 0.375}   # TVP locked 0.25; BVAR/MIDAS via alloc_sweep.py
 AA_START, START, END, TRAIN_FROM = 2001, 2015, 2024, 1997
+
+
+def _weighted_combo(members, weights):
+    """Row-wise weighted mean over available members; weights renormalised per row."""
+    cols = [c for c in members.columns if c in weights]
+    w = pd.Series({c: weights[c] for c in cols})
+    M = members[cols]
+    wmat = M.notna().astype(float) * w.values
+    denom = wmat.sum(axis=1).replace(0, np.nan)
+    return (M.fillna(0) * w.values).sum(axis=1) / denom
 
 
 def load_matrix(pinned=None):
@@ -61,7 +71,7 @@ def backtest(df, live):
             member_recon[tag] = recon
             out[f"{tag}_pred"] = recon.reindex(out.index)
     members = pd.DataFrame(member_recon).reindex(out.index)
-    out["stage2_pred"] = members.mean(axis=1)          # equal weight, NaN-safe renorm
+    out["stage2_pred"] = _weighted_combo(members, WEIGHTS)   # WEIGHTS, NaN-safe renorm
     out["n_members"] = members.notna().sum(axis=1)
     out["forecast"] = out["stage2_pred"].fillna(out["aa_pred"])
     out["aa_err"] = out["actual"] - out["aa_pred"]
@@ -95,12 +105,13 @@ def nowcast(df, live):
     # residual target for stage-2: fit members on (CPI - AA) over history.
     aa_hist = Z.AutoARIMA().backtest(df, [], TARGET, start_year=AA_START, end_year=END)
     d["resid"] = (aa_hist["actual"] - aa_hist["pred"]).reindex(d.index)
-    parts, contrib = [], {}
+    contrib = {}
     for tag, cls in STAGE2:
         rp, _ = cls().nowcast(d, live, "resid")
         if np.isfinite(rp):
-            parts.append(rp); contrib[tag] = float(rp)
-    overlay = float(np.mean(parts)) if parts else 0.0
+            contrib[tag] = float(rp)
+    wsum = sum(WEIGHTS[t] for t in contrib) or 1.0
+    overlay = sum(WEIGHTS[t] * v for t, v in contrib.items()) / wsum
     fc = float(aa_pred + overlay) if np.isfinite(aa_pred) else np.nan
     return dict(nowcast_date=str(pd.Timestamp(ndate).date()) if ndate is not None else None,
                 aa_pred=float(aa_pred), stage2_overlay=overlay, forecast=fc,
