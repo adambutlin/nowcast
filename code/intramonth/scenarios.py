@@ -115,8 +115,8 @@ if __name__ == "__main__":
     # synthetic smoke test
     post = {"disinflation": 0.2, "normal": 0.6, "shock": 0.2}
     drivers = {"energy_led": 0.7, "services_led": 0.3, "policy_tightening": 0.4}
-    pert = {-1: 2.9, 0: 3.04, +1: 3.18}
-    df = build_scenarios(post, drivers, pert, sigma=0.42, base_pt=3.04,
+    pert = {-1: 2.73, 0: 2.83, +1: 2.93}   # synthetic fixture (headline ≈ dashboard nowcast)
+    df = build_scenarios(post, drivers, pert, sigma=0.42, base_pt=2.83,
                          dispersion=0.5, skew_up=0.6, top_model="TVP")
     print(df.round(3).to_string(index=False))
     print(f"Σprob={df['prob'].sum():.4f}  E[point]={expected_forecast(df):.3f}  "
