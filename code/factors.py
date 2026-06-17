@@ -122,6 +122,69 @@ def _boe_spot_5y(zip_url):
     return pd.concat(frames).sort_index()["y5"]
 
 
+# ── Yield-curve slopes (new-factors) ─────────────────────────────────────────
+_BOE_CURVE_CACHE: dict = {}
+
+
+def _boe_nominal_curve():
+    """BoE GLC nominal spot curve -> month-end DataFrame of ALL maturities (cols=years).
+    Cached. Used for curve slopes that need maturities beyond the local 2y/5y/10y file."""
+    if "df" in _BOE_CURVE_CACHE:
+        return _BOE_CURVE_CACHE["df"]
+    url = ("https://www.bankofengland.co.uk/-/media/boe/files/statistics/"
+           "yield-curves/glcnominalddata.zip")
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    frames = []
+    for fname in sorted(z.namelist()):
+        xl = pd.ExcelFile(z.open(fname))
+        if "4. spot curve" not in xl.sheet_names:
+            continue
+        df = xl.parse("4. spot curve", header=None)
+        mats = df.iloc[3, 1:].values.astype(float)
+        data = df.iloc[5:].copy()
+        data.columns = ["date"] + list(mats)
+        data = data[data["date"].apply(
+            lambda x: isinstance(x, (pd.Timestamp, datetime.datetime)))]
+        data["date"] = pd.to_datetime(data["date"])
+        frames.append(data.set_index("date").apply(pd.to_numeric, errors="coerce"))
+    out = pd.concat(frames).sort_index().resample("ME").last() if frames else pd.DataFrame()
+    _BOE_CURVE_CACHE["df"] = out
+    return out
+
+
+def _curve_col(df, maturity):
+    cols = [c for c in df.columns if isinstance(c, (int, float))]
+    nearest = min(cols, key=lambda x: abs(float(x) - maturity))
+    return df[nearest]
+
+
+def _slope_2s10s():
+    """10y-2y gilt slope (bp). Local uk_rates_daily.csv primary; BoE curve fallback."""
+    path = os.path.join(DATA_DIR, "uk_rates_daily.csv")
+    if os.path.exists(path):
+        d = pd.read_csv(path, parse_dates=["date"]).set_index("date").sort_index()
+        if {"gilt_2y", "gilt_10y"}.issubset(d.columns):
+            s = (d["gilt_10y"] - d["gilt_2y"]).mul(100).resample("ME").last()
+            if s.dropna().shape[0] > 24:
+                return s.dropna()
+    c = _boe_nominal_curve()
+    return (_curve_col(c, 10) - _curve_col(c, 2)).mul(100).dropna()
+
+
+def _slope_5s30s():
+    """30y-5y gilt slope (bp) from BoE nominal spot curve (no local 30y)."""
+    c = _boe_nominal_curve()
+    return (_curve_col(c, 30) - _curve_col(c, 5)).mul(100).dropna()
+
+
+def _freightos_fbx():
+    """Freightos Baltic Index (FBX) container freight. No free FRED/DBnomics/yfinance
+    source (proprietary; TradingEconomics paid). CSV drop-in only:
+    data/freightos_fbx.csv [date,value]."""
+    raise RuntimeError("FBX has no free live source — drop data/freightos_fbx.csv")
+
+
 def _rents_lag1():
     """
     ONS L522.M rents YoY lagged 1 month, extended by 1 forward row.
@@ -433,6 +496,28 @@ REGISTRY = {
         transform="diff", pub_lag=0, candidate=True, csv="uk_gilt_10y.csv",
         note="UK 10Y government bond yield (FRED IRLTLT01GBM156N) from 1960. "
              "diff transform for stationarity. pub_lag=0: daily market rate."),
+    # ── new-factors: rates vol, freight, curve slopes ────────────────────────
+    "move_index": dict(
+        fetch=lambda: _yf("^MOVE"), transform="level",
+        pub_lag=0, candidate=True, csv="move_index.csv",
+        note="ICE BofA MOVE index (yfinance ^MOVE, 2010+). Treasury/rates implied vol; "
+             "rate-uncertainty analogue of VIX. pub_lag=0: daily. FRED has no free MOVE."),
+    "freightos_fbx": dict(
+        fetch=_freightos_fbx, transform="logret",
+        pub_lag=0, candidate=True, csv="freightos_fbx.csv",
+        note="Freightos Baltic Index (FBX) global container freight. NO free source "
+             "(FRED/DBnomics/yfinance all miss; TradingEconomics paid). CSV drop-in only: "
+             "data/freightos_fbx.csv [date,value]. Free ocean-freight proxy = deep_sea_freight."),
+    "slope_2s10s": dict(
+        fetch=_slope_2s10s, transform="level",
+        pub_lag=0, candidate=True, csv="slope_2s10s.csv",
+        note="UK gilt 10y-2y slope (bp). Local uk_rates_daily.csv primary, BoE GLC "
+             "fallback. Growth/inflation-expectations curve signal. pub_lag=0: daily."),
+    "slope_5s30s": dict(
+        fetch=_slope_5s30s, transform="level",
+        pub_lag=0, candidate=True, csv="slope_5s30s.csv",
+        note="UK gilt 30y-5y slope (bp) from BoE GLC nominal spot curve (no local 30y). "
+             "Long-end term-premium / fiscal-supply signal. pub_lag=0: daily."),
     "oil_vol_6m": dict(
         fetch=lambda: np.log(_fred("DCOILBRENTEU")).diff().rolling(6).std(),
         transform="level", pub_lag=0, candidate=True, csv="oil_vol_6m.csv",
