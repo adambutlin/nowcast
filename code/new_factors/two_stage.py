@@ -25,11 +25,12 @@ os.makedirs(_OUT, exist_ok=True)
 
 TARGET = "cpi_yoy"
 PINNED = ["oil_brent", "gas_eu", "uk_quarterly_gdp", "imf_all_commodity",
-          "global_supply_chain_pressure", "mpc_rate_change", "mpc_vote_split",
-          "ofgem_cap_delta", "budget_event",
-          "uk_ppi_input", "deep_sea_freight"]   # added 2026-06-17 (factor race winners)
-REG = ["mpc_rate_change", "mpc_vote_split", "ofgem_cap_delta", "budget_event"]
-STAGE2 = [("bvar", Z.BVAR), ("midas", Z.MIDAS)]   # FIXED equal weight; TVP dropped 2026-06-17 (unstable)
+          "global_supply_chain_pressure", "mpc_rate_change",
+          "ofgem_cap_delta",
+          "uk_ppi_input", "deep_sea_freight"]   # mpc_vote_split+budget_event dropped (SHAP dead weight)
+REG = ["mpc_rate_change", "ofgem_cap_delta"]
+STAGE2 = [("bvar", Z.BVAR), ("tvp", Z.TVP), ("midas", Z.MIDAS)]   # TVP reinstated; weight via WEIGHTS
+WEIGHTS = {"bvar": 1/3, "tvp": 1/3, "midas": 1/3}   # default equal; see weight_sweep.py
 AA_START, START, END, TRAIN_FROM = 2001, 2015, 2024, 1997
 
 
