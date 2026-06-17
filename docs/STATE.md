@@ -2,6 +2,31 @@
 
 *Last updated: 2026-06-17*
 
+> **2026-06-17 — FROZEN two-stage model + factor expansion (`new-factors`, incl `reg-detect`).**
+> - **Production model = `code/new_factors/two_stage.py`.** Stage 1 AutoARIMA; Stage 2
+>   fixed-weight residual ensemble. **No detector, switching, HMM, or regime weights.**
+>   Frozen `WEIGHTS = {bvar 0.375, tvp 0.25, midas 0.375}`. Backtest vs AA: full
+>   rel_rmse 0.929, shock 0.688, calm(ex-shock) 0.345. Live May-2026 nowcast 2.92
+>   (overshoot is TVP-driven; realised print 2.8).
+> - **`reg-detect` (shelved, merged): three null results.** (1) HelpfulStage2 — can we
+>   predict when Stage-2 beats AA? base rate 0.48, best OOS AUC ~0.58 (not significant);
+>   gating ⊀ Stage-2-always; **kill the detector**. (2) ObservableShock label + switched
+>   AA+BVAR/AA+MIDAS architecture is **significantly worse** than the fixed combo
+>   (DM p=0.02–0.05) — MIDAS worst standalone; combo wins by diversification.
+>   (3) Latent HMM/TVP do not detect observable shocks (AUC ≤0.5). See
+>   `docs/reg_detect_FINDINGS.md`, `docs/reg_detect_observable_shock.md`.
+> - **Factor work (`docs/new_factors_race.md`, `_alloc.md`).** Registered MOVE
+>   (yf ^MOVE), gilt slopes 2s10s/5s30s (local+BoE GLC), Freightos FBX (no free source —
+>   CSV-only). Availability: UK PPI input/output live via ONS JSON API (codes GHIP/GB7S);
+>   supplier-delivery PMI proprietary (no free source). **Added `uk_ppi_input` +
+>   `deep_sea_freight` to PINNED** — factor race winners (univ rel_rmse 0.93/0.95) and
+>   top-2 SHAP of the pinned set; confirmed +2% two-stage RMSE end-to-end. MOVE/2s10s/5s30s
+>   do NOT help the CPI residual (rel>1) — kept for the rates pipeline only.
+> - **Ensemble-weight diagnostics:** member errors BVAR–MIDAS corr 0.93 (near-redundant),
+>   TVP the diversifier (0.69). RMSE surface flat across BVAR/MIDAS (DM p>0.32 vs equal) →
+>   equal split is robust. TVP-weight sweep: RMSE-optimal ~0.55 but live point worsens
+>   monotonically with TVP weight → 0.25 chosen (bias/variance compromise).
+
 > **2026-06-17 — canonical forecast consolidation + model-overlay diagnostics.**
 > - **Single source for the headline nowcast = the intramonth pipeline**
 >   (`code/intramonth/run.py`). Removed `code/forecast_may2026.py`, a divergent
