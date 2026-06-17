@@ -16,7 +16,7 @@ import two_stage as TS
 
 _OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                     "data", "new_factors")
-GRID = [0.0, 0.10, 0.1667, 0.25, 0.3333, 0.45, 0.55, 0.65, 0.80, 1.0]
+GRID = [0.0, 0.10, 0.1667, 0.20, 0.25, 0.3333, 0.45, 0.55, 0.65, 0.80, 1.0]
 WINDOWS = {"full": lambda i: i.year >= TS.START,
            "2022_23": lambda i: i.year.isin([2022, 2023]),
            "ex_shock": lambda i: ~i.year.isin([2022, 2023]),
