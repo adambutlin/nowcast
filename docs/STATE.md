@@ -1,6 +1,28 @@
 # STATE — UK CPI Nowcast Project
 
-*Last updated: 2026-06-14*
+*Last updated: 2026-06-17*
+
+> **2026-06-17 — canonical forecast consolidation + model-overlay diagnostics.**
+> - **Single source for the headline nowcast = the intramonth pipeline**
+>   (`code/intramonth/run.py`). Removed `code/forecast_may2026.py`, a divergent
+>   standalone forecaster (fixed 0.5·TVP+0.5·BVAR residual, 2001/2016 training, no
+>   MIDAS / no as-of HF) that produced a stale **3.04%** May headline. Deleted its
+>   outputs (`may2026_forecast.csv`, `may2026_fan.png`, ex1 residual plots). Commit `4c892c8`.
+> - **May 2026 headline nowcast = 2.83%** (±1σ 2.19–3.46), intramonth T-1, MIDAS-dominant.
+>   Decomposition: AutoARIMA 2.71 (≈96% of level) + factor overlay +0.12.
+> - **Model-overlay diagnostics:** the stack is **two stages**, not four clean layers.
+>   Stage 1 AutoARIMA = level/trend (clean, residual orthogonal by construction).
+>   Stage 2 BVAR/TVP/MIDAS predict the *same* residual from overlapping factors →
+>   reconstructed-CPI predictions correlate ~0.99–1.00 = **redundant, not orthogonal**.
+>   Ensemble weights @ T-1: AutoARIMA 0.215 / BVAR 0.161 / TVP 0.293 / MIDAS 0.331;
+>   @ T-30 AutoARIMA 0.625 (clean horizon hand-off to MIDAS/TVP as daily data accrues).
+>   Only **MIDAS** adds genuinely distinct (intramonth daily) information; BVAR/TVP
+>   re-express the monthly-factor signal. Consistent with the ensemble review: the
+>   regime/weighted overlay does **not** beat flat/AutoARIMA OOS (DM insignificant).
+> - **Branches:** `dashboard` (shelved) carries a Streamlit nowcasting workstation
+>   (`code/dashboard/`, `run_dashboard.py`) + learned-regime/calibration work was
+>   explored on the dropped `regimes` branch (HF→regime mapping found largely illusory
+>   outside energy shocks). `main` carries the audited CPI + intramonth + rates pipelines.
 
 > **2026-06-14 — intramonth system + hostile ensemble review (merged to `main`).**
 > Added `code/intramonth/` — an intramonth (T-30…T-1) regime-dependent nowcasting

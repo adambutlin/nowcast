@@ -206,3 +206,25 @@ WHICH model to use per-regime can outperform letting the model handle it interna
     `AutoARIMA + factor residual`.
 - Tests: `code/tests/test_intramonth.py` (causal HF, regime/weight/scenario coherence,
   switchability, live integration).
+
+---
+
+## 2026-06-17 — forecast consolidation + model-overlay diagnostics
+
+- Removed `code/forecast_may2026.py` (divergent standalone, 3.04% May headline) and its
+  outputs. Intramonth pipeline (`code/intramonth/run.py`) is the single source →
+  **May 2026 headline = 2.83%** (AutoARIMA 2.71 + factor overlay +0.12). Commit `4c892c8`.
+- Model-overlay decomposition (headline, intramonth):
+  - Two-stage design: AutoARIMA (level) + ONE blended residual correction (BVAR/TVP/MIDAS).
+  - Ensemble weights — T-30: AA 0.625 / BVAR 0.107 / TVP 0.007 / MIDAS 0.261;
+    T-1: AA 0.215 / BVAR 0.161 / TVP 0.293 / MIDAS 0.331 (clean horizon hand-off).
+  - Stage-2 redundancy: reconstructed-CPI predictions correlate ~0.99–1.00; only MIDAS
+    adds distinct (intramonth daily) information. Overlay buys interpretability +
+    intramonth responsiveness, NOT accuracy (consistent with the DM ensemble review).
+- `dashboard` branch (Streamlit workstation) shelved; `regimes` branch dropped
+  (HF→regime mapping largely illusory outside energy shocks).
+
+### Maintenance note
+yfinance fetches (`gas_eu` TTF, HF daily panel) are slow/throttle-prone (~2min, can hang)
+— the main data-ingestion fragility. `hf_data.get_daily()` reuses a <12h CSV snapshot;
+the monthly `build_matrix` (gas_eu) is not yet disk-cached.
