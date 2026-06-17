@@ -56,3 +56,20 @@ keep only one.
   Adding PPI/freight should be validated in the full two-stage backtest before pinning.
 
 Artifacts: `data/new_factors/factor_race.csv`, `plots/new_factors/factor_race.png`.
+
+## End-to-end confirmation (two-stage backtest, +uk_ppi_input +deep_sea_freight)
+
+| window | 2-stage base | +PPI/freight | Δ | rel base→plus |
+|---|---|---|---|---|
+| full | 0.4375 | 0.4287 | −0.0088 | 0.933→0.915 |
+| 2022_23 | 0.6803 | 0.6692 | −0.0111 | 0.882→0.867 |
+| ex_shock | 0.3515 | 0.3432 | −0.0083 | 0.991→0.968 |
+| pre_2020 | 0.1949 | 0.1954 | +0.0005 | calm-neutral |
+
+Consistent ~2% improvement on the 2-stage (8.5% over AA); ex-shock edge sharpens
+(0.991→0.968). **uk_ppi_input + deep_sea_freight added to two_stage PINNED.**
+
+Caveat: live May-2026 nowcast moved 2.84→2.96 (overlay +0.25; TVP member +0.64). The
+new cost-push factors pushed the point UP while the realised 2.8 was held down by food
+base effects (not in the factor set). Backtest RMSE improves on average; the single live
+month flags TVP overreaction to the new factors — candidate for member shrinkage.

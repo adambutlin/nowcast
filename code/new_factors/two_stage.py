@@ -26,15 +26,17 @@ os.makedirs(_OUT, exist_ok=True)
 TARGET = "cpi_yoy"
 PINNED = ["oil_brent", "gas_eu", "uk_quarterly_gdp", "imf_all_commodity",
           "global_supply_chain_pressure", "mpc_rate_change", "mpc_vote_split",
-          "ofgem_cap_delta", "budget_event"]
+          "ofgem_cap_delta", "budget_event",
+          "uk_ppi_input", "deep_sea_freight"]   # added 2026-06-17 (factor race winners)
 REG = ["mpc_rate_change", "mpc_vote_split", "ofgem_cap_delta", "budget_event"]
 STAGE2 = [("bvar", Z.BVAR), ("tvp", Z.TVP), ("midas", Z.MIDAS)]   # FIXED, equal weight
 AA_START, START, END, TRAIN_FROM = 2001, 2015, 2024, 1997
 
 
-def load_matrix():
-    raw, status = F.build_matrix(names=PINNED + [TARGET])
-    live = [n for n in PINNED if status.get(n) != "unavailable"]
+def load_matrix(pinned=None):
+    pinned = PINNED if pinned is None else pinned
+    raw, status = F.build_matrix(names=pinned + [TARGET])
+    live = [n for n in pinned if status.get(n) != "unavailable"]
     raw = raw[raw.index.year >= TRAIN_FROM]
     df = F.apply_publication_lags(raw, live)
     for rf in REG:
