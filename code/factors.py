@@ -518,6 +518,17 @@ REGISTRY = {
         pub_lag=0, candidate=True, csv="slope_5s30s.csv",
         note="UK gilt 30y-5y slope (bp) from BoE GLC nominal spot curve (no local 30y). "
              "Long-end term-premium / fiscal-supply signal. pub_lag=0: daily."),
+    "uk_ppi_input": dict(
+        fetch=lambda: _ons_timeseries("GHIP", "economy/inflationandpriceindices"),
+        transform="logret", pub_lag=1, candidate=True, csv="uk_ppi_input.csv",
+        note="ONS UK manufacturing input PPI index (code GHIP, 1984+). logret = input "
+             "cost-push momentum. pub_lag=1: PPI released same day as CPI -> only prior "
+             "month available when nowcasting."),
+    "uk_ppi_output": dict(
+        fetch=lambda: _ons_timeseries("GB7S", "economy/inflationandpriceindices"),
+        transform="logret", pub_lag=1, candidate=True, csv="uk_ppi_output.csv",
+        note="ONS UK manufacturing output (factory-gate) PPI index (code GB7S, 1957+). "
+             "logret = pipeline output-price momentum -> CPI goods. pub_lag=1 (see input)."),
     "oil_vol_6m": dict(
         fetch=lambda: np.log(_fred("DCOILBRENTEU")).diff().rolling(6).std(),
         transform="level", pub_lag=0, candidate=True, csv="oil_vol_6m.csv",
