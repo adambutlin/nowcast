@@ -1,5 +1,35 @@
 ---
 
+## Handoff: 2026-06-19 — MODEL FROZEN, research closed, merged to main
+
+**State:** the architecture is FROZEN. Research phase over. Do NOT add models/factors/
+detectors/shrinkage schemes or run architecture experiments.
+
+**Production model** (`code/production/model.py`):
+`Forecast = AutoARIMA + 0.25·TVP + 0.25·LGBM` (AA + λ·overlay, λ=0.5, overlay = 0.5 TVP +
+0.5 LGBM). Reference-month nowcast, info ≤ month-end T. Run: `set -a; . ./.env; set +a;
+PYTHONPATH=code .venv/bin/python -u code/production/model.py`.
+
+**What to do next = LIVE EVALUATION ONLY:**
+1. Each release, log forecasts: `python code/production/update_live_scorecard.py --add --month
+   YYYY-MM --date YYYY-MM-DD --aa .. --current .. --final .. --consensus .. --ucl .. [--experimental ..]`.
+2. When the print lands: `... --actual --month YYYY-MM --value X.X`.
+3. Regenerate: `python code/production/generate_live_report.py` → `docs/live_report.md`.
+4. Decision gate: after ~12 prospective releases, judge **final-production vs AutoARIMA-only**.
+   If it doesn't beat AA live → ship AA alone (demote the overlay).
+
+**Genesis (permanent):** May-2026 — AA 2.71 (best) / final 2.91 / actual 2.80. Final beat
+consensus+UCL+current-prod but lost to AA (calm/base-effect overshoot). Do not overwrite.
+
+**Docs:** `final_model.md` (spec), `MODEL_CARD.md`, `final_research_summary.md`,
+`RESEARCH_NOTES.md`, `ARCHITECTURE.md`, `architecture_inventory.md`, `purge_candidates.md`.
+
+**Outstanding risks:** overlay edge insignificant in-sample (DM p≈0.17) + shock-concentrated;
+LGBM ≈ post-2021 PPI wrapper; consensus benchmark is a proxy (no point-in-time survey); λ=0.5
+is a governance floor vs statistical 0.8. All to be resolved by the live record.
+
+---
+
 ## Handoff: 2026-06-05T19:42:36Z (auto-saved before compaction)
 
 ### Compaction Metadata

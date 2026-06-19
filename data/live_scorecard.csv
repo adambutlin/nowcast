@@ -1,0 +1,2 @@
+release_month,forecast_date,aa,current_production,final_production,consensus,ucl,experimental_overlay,actual,aa_error,current_production_error,final_production_error,consensus_error,ucl_error,experimental_overlay_error
+2026-05,2026-05-31,2.71,2.917,2.91,3.0,3.05,3.111,2.8,-0.08999999999999986,0.11699999999999999,0.11000000000000032,0.20000000000000018,0.25,0.3110000000000004

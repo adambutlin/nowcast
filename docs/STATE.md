@@ -1,6 +1,24 @@
 # STATE — UK CPI Nowcast Project
 
-*Last updated: 2026-06-17*
+*Last updated: 2026-06-19*
+
+> **2026-06-19 — MODEL FROZEN; research phase CLOSED (`timing` → `main`).**
+> - **Canonical production model = `code/production/model.py`:**
+>   `Forecast = AutoARIMA + 0.25·TVP + 0.25·LGBM` (AA + λ·overlay, λ=0.5, overlay = 0.5 TVP +
+>   0.5 LGBM). Reference-month nowcast; info ≤ month-end T (no post-T / post-release data).
+> - **Governance:** statistical optimum λ≈0.8 (overlay-shrinkage + Bayesian reliability),
+>   **production λ=0.5** chosen — overlay is informative but ~79% noise (R²≈0.21) and overshoots
+>   in calm months. **Dropped BVAR + MIDAS** (redundant cost-push, 0.89–0.93 err-corr).
+>   **Rejected** (all falsified OOS): regime-switching, HelpfulStage2/ObservableShock detectors,
+>   HMM, TVP-vs-LGBM winner prediction, release-day updating, latent-state forecasting.
+> - **Live scorecard seeded** (`data/live_scorecard.csv`, genesis May-2026, permanent):
+>   AA 2.71 · current-prod 2.917 · **final-prod 2.91** · consensus 3.00 · UCL 3.05 ·
+>   experimental λ=1 3.11 · actual **2.80**. Final beats consensus/UCL/current-prod, **loses to
+>   AA** (calm/base-effect month — the documented failure mode). Update via
+>   `code/production/{update_live_scorecard,generate_live_report}.py`.
+> - **Docs:** `final_model.md`, `final_research_summary.md`, `MODEL_CARD.md`, `ARCHITECTURE.md`,
+>   `RESEARCH_NOTES.md`, `architecture_inventory.md`, `purge_candidates.md`, `live_report.md`,
+>   plus the `timing_*.md` evidence trail. **Evaluate prospectively; do not modify.**
 
 > **2026-06-17 — FROZEN two-stage model + factor expansion (`new-factors`, incl `reg-detect`).**
 > - **Production model = `code/new_factors/two_stage.py`.** Stage 1 AutoARIMA; Stage 2

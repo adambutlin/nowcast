@@ -1,5 +1,28 @@
 # nowcast
 
+## ⭐ FROZEN PRODUCTION MODEL (2026-06-19)
+
+```
+Forecast = AutoARIMA + 0.25·TVP + 0.25·LGBM
+         = AA + λ·Overlay,  Overlay = 0.5·TVP + 0.5·LGBM,  λ = 0.5
+```
+Entry point: **`code/production/model.py`**. Reference-month nowcast (info ≤ month-end T;
+release is T+15…T+21). The research phase is **closed** — evaluate prospectively, do not modify
+without a governance decision.
+
+- **Spec & rationale:** [docs/final_model.md](docs/final_model.md) · [docs/MODEL_CARD.md](docs/MODEL_CARD.md)
+- **Research summary:** [docs/final_research_summary.md](docs/final_research_summary.md) · [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md)
+- **Architecture / inventory:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/architecture_inventory.md](docs/architecture_inventory.md) · [docs/purge_candidates.md](docs/purge_candidates.md)
+- **Live evaluation:** `code/production/{update_live_scorecard,generate_live_report}.py` → `data/live_scorecard.csv`, [docs/live_report.md](docs/live_report.md)
+
+Governance: statistical optimum λ≈0.8, **production λ=0.5** (overlay is informative but
+~79% noise and overshoots in calm months — May-2026 genesis: AA 2.71 / actual 2.80 / λ=1
+overlay 3.11). Dropped BVAR+MIDAS (redundant); rejected all regime-switching/detector/HMM/
+latent-state/release-day approaches (falsified OOS). Everything below this banner is **legacy
+or research context**.
+
+---
+
 UK CPI YoY nowcasting (13 operational + 9 experimental model zoo, 38 live
 factors, mixed-frequency pub-lag discipline, regime identification, ensemble
 combination, regime-model-combine) **plus** a downstream rates-repricing research
