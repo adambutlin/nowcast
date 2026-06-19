@@ -23,38 +23,19 @@ or research context**.
 
 ---
 
-UK CPI YoY nowcasting (13 operational + 9 experimental model zoo, 38 live
-factors, mixed-frequency pub-lag discipline, regime identification, ensemble
-combination, regime-model-combine) **plus** a downstream rates-repricing research
-pipeline (`code/rates/`) that tests whether the nowcast carries information beyond
-consensus and can be turned into a UK 2Y gilt signal, **plus** an intramonth
-(T-30…T-1) regime-dependent nowcasting system (`code/intramonth/`).
-
-**Intramonth system (`code/intramonth/`):** causal high-frequency as-of panel
-(daily energy/FX/vol truncated to month-end − k days), multilayer stack
-(AutoARIMA baseline + BVAR/TVP/MIDAS residual models), HMM regime posteriors,
-regime+horizon model weights, and a probabilistic scenario tree (base /
-normalisation / shock). Run: `PYTHONPATH=code python -m intramonth.run`.
-
-> **Hostile verdict (`code/intramonth/ensemble_review.py`):** regime weighting does
-> **not** beat flat-equal weighting or AutoARIMA alone OOS (Diebold–Mariano rejects
-> nothing; regime-weighted RMSE 0.5185 > flat 0.5080 > AutoARIMA 0.5086). The regime
-> + scenario layer is **interpretation/communication, not an alpha source** — the
-> validated point forecast is `AutoARIMA + factor residual`.
-
-**Documentation:**
-- [docs/STATE.md](docs/STATE.md) — current results, factor matrix, rates pipeline status, pending work
-- [docs/SPEC.md](docs/SPEC.md) — system specification and design decisions
-- [docs/PROCESS.md](docs/PROCESS.md) — chronological build log
-- [docs/handoff/HANDOFF.md](docs/handoff/HANDOFF.md) — session handoff notes
-
-**Branches / tags:** `main` carries the audited+remediated CPI nowcast (H6/C4/C1
-fixes, commit `518f528`). `alpha-gen` (tag `rates-alpha`) carries the rates
-pipeline. See the Rates Repricing Pipeline section below.
+> **Everything below this line is LEGACY / research context**, retained for reference only.
+> The production model is the banner above (`code/production/model.py`). The model-zoo,
+> `code/rates/` repricing pipeline, and `code/intramonth/` system were research scaffolding;
+> their findings were folded into the frozen model and all timing/regime/switching approaches
+> were falsified out-of-sample. See [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md),
+> [docs/architecture_inventory.md](docs/architecture_inventory.md), and
+> [docs/purge_candidates.md](docs/purge_candidates.md). Other docs:
+> [STATE](docs/STATE.md) · [SPEC](docs/SPEC.md) · [PROCESS](docs/PROCESS.md) ·
+> [HANDOFF](docs/handoff/HANDOFF.md).
 
 ---
 
-## UK CPI YoY Model Zoo
+## UK CPI YoY Model Zoo *(legacy reference)*
 
 **Target:** UK CPI YoY (ONS D7G7.M via dbnomics, %)
 **Factors:** 30 live (26 pub_lag=0, 4 pub_lag≥1)
