@@ -1311,3 +1311,55 @@ FRED_API_KEY=<key> .venv/bin/python code/sweep_residual_regime.py > /tmp/sweep.l
 **CAVEMAN MODE** active (full level).
 
 ---
+---
+
+## Handoff: 2026-06-20T07:55:42Z (auto-saved before compaction)
+
+### Compaction Metadata
+- Trigger: manual
+- Custom instructions: (none)
+- Transcript: /Users/Adam/.claude/projects/-Users-Adam-Documents-home-quant-nowcast/475f429d-7009-4097-80b1-22f183088bfe.jsonl
+- CWD: /Users/Adam/Documents/home/quant/nowcast
+
+### Last User Message (transcript tail)
+(unavailable)
+
+### Last Assistant Message (transcript tail)
+Takes effect next session — this session already has the hook context loaded, so caveman directives won't re-inject on your next prompts.
+
+### Git Snapshot
+- Branch: main
+- Status:
+ M docs/handoff/HANDOFF.md
+?? .codex/
+- Recent commits:
+fa33fcc fix(factors): remove duplicate uk_ppi_input/uk_ppi_output REGISTRY keys
+a282ebb docs(readme): drop legacy zoo/rates/intramonth intro; mark below-banner as legacy
+1405aa9 docs: finalize governance docs + seed permanent live scorecard
+a5b295a final
+89d6be1 merge: finalize UK CPI production model and transition to live evaluation
+
+### Model Summary
+- FROZEN production model: `Forecast = AutoARIMA + 0.25·TVP_resid + 0.25·LGBM_resid` (λ=0.5, overlay = 0.5·TVP + 0.5·LGBM). Entry point: `code/production/model.py`.
+- Reference-month nowcast: info ≤ month-end T; release T+15…T+21. Research phase is CLOSED — no architecture/weight/factor/detector changes without a governance decision.
+- λ=0.5 is a governance floor below the statistical optimum λ≈0.8: overlay is informative but ~79% noise (R²≈0.21) and overshoots in calm months (May-2026 genesis: AA 2.71 / actual 2.80 / λ=1 overlay 3.11).
+- Members: AA (anchor, ~96% of level), TVP (shock pass-through diversifier), LGBM on AA residual (cost-pressure/PPI overlay, stable nonlinear). LGBM edge is ~90% `uk_ppi_input`.
+- PINNED factors (9, in `code/new_factors/two_stage.py`): oil_brent, gas_eu, uk_quarterly_gdp, imf_all_commodity, global_supply_chain_pressure (expected to drop), mpc_rate_change, ofgem_cap_delta, uk_ppi_input, deep_sea_freight.
+- Dropped BVAR+MIDAS (redundant). Falsified OOS and rejected: all regime-switching / HelpfulStage2 / ObservableShock / HMM / latent-state / release-day / TVP-vs-LGBM-switching approaches. Averaging beats switching.
+- `factors.py`: duplicate `uk_ppi_input`/`uk_ppi_output` REGISTRY keys fixed (commit fa33fcc); canonical defs use transform="yoy" — frozen-model behavior unchanged.
+- NEW this session (uncommitted): production `nowcast()` now surfaces silent factor degradation. If a PINNED factor fails both CSV drop-in and live fetch, `two_stage.load_matrix` silently shrinks `live` and the overlay degrades with no error. `nowcast()` now prints a loud `⚠ DEGRADED: N/9` to stderr (not warnings.warn — line 24 filterwarnings("ignore") swallows it) and returns `n_pinned/n_live/live_factors/missing_factors/degraded` in its dict. Pure observability; frozen math untouched. Decision was "warn + annotate, never block" (user-chosen).
+- Live evaluation is the only standing task: append each CPI release to `data/live_scorecard.csv` via `code/production/update_live_scorecard.py`, fill actuals, regenerate `docs/live_report.md`. Decision gate after ~12 releases (final-production vs AutoARIMA-only).
+- BLAS deadlock workaround required for all python runs: `export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1`. No `timeout` on macOS — use background + until-loop polling.
+
+### Handoff Context (paste into next session)
+- Repo is on `main`, clean except the in-progress production/model.py observability edit (degradation guard) which is NOT yet committed. Latest pushed commit: fa33fcc.
+- IMMEDIATE: finish verifying the degradation guard. Run A (no FRED key) should print `⚠ DEGRADED: 6/9` (only mpc_rate_change/ofgem_cap_delta/uk_ppi_input are CSV drop-ins); Run B (`.env` loaded) should print `factors: …/9 PINNED factors live` cleanly. Verification command:
+  `export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1; set -a; . ./.env; set +a; PYTHONPATH=code .venv/bin/python -W ignore -u code/production/model.py`
+- Note GSCP (global_supply_chain_pressure) is expected to drop (Excel-engine failure), so even a healthy `.env` run may show 8/9 live, not 9/9 — that is NOT a real degradation. If you later want to distinguish "expected drop" from "real degradation", treat GSCP as optional in the missing-factor check.
+- After verification passes, commit the model.py change (observability only) — suggested message: `feat(production): surface silent PINNED-factor degradation in nowcast()`. Confirm with user before committing/pushing per repo norms.
+- Run the production model with: `set -a; . ./.env; set +a; PYTHONPATH=code .venv/bin/python -u code/production/model.py` (June 2026 expected ≈ 2.87: AA 2.726 + TVP +0.160 + LGBM −0.015).
+- Do NOT: search for new models, add factors/detectors/shrinkage schemes, run architecture experiments, or re-litigate λ. The model is frozen; only observability/ops/live-eval work is in scope.
+- Governance + rationale docs: `docs/final_model.md`, `docs/MODEL_CARD.md`, `docs/final_research_summary.md`, `docs/RESEARCH_NOTES.md`, `docs/ARCHITECTURE.md`. README banner at top of `README.md` is the canonical summary; everything below its banner is legacy/research context.
+- The caveman hooks were removed from `~/.claude/settings.json` last session (global config, not repo) — no action needed.
+
+---

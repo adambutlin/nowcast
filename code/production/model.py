@@ -36,6 +36,9 @@ LGB = dict(n_estimators=300, learning_rate=0.02, num_leaves=7, max_depth=3,
            min_child_samples=12, subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
            random_state=0, verbose=-1)
 SPEC = "AA + 0.5*(0.5*TVP + 0.5*LGBM) = AA + 0.25*TVP + 0.25*LGBM"
+# PINNED factors documented to always drop (not a real degradation when missing).
+# global_supply_chain_pressure: ONS/NY-Fed xlsx fails engine detection — known, expected.
+OPTIONAL_PINNED = {"global_supply_chain_pressure"}
 
 
 def _residual_history(df):
@@ -45,9 +48,23 @@ def _residual_history(df):
 
 def nowcast(df=None, live=None):
     """Return the frozen production nowcast for the first unreleased CPI month.
-    df/live default to the production factor matrix (two_stage.load_matrix)."""
+    df/live default to the production factor matrix (two_stage.load_matrix).
+
+    A PINNED factor that fails both its CSV drop-in and live fetch is silently
+    dropped from `live` by two_stage.load_matrix, which degrades the TVP/LGBM
+    overlay WITHOUT raising. We surface that here: the returned dict carries
+    `missing_factors` / `n_live` / `degraded`, and any degradation is printed
+    LOUDLY to stderr (the module-level warnings.filterwarnings("ignore") would
+    otherwise swallow a warnings.warn). Forecast is still produced — caller decides."""
     if df is None:
         df, live, _ = TS.load_matrix()
+    missing = [n for n in TS.PINNED if n not in (live or [])]
+    # Only an UNEXPECTED drop counts as degradation; OPTIONAL_PINNED is known-to-drop.
+    missing_required = [n for n in missing if n not in OPTIONAL_PINNED]
+    if missing_required:
+        print(f"[production.nowcast] ⚠ DEGRADED: {len(missing_required)} unexpected PINNED "
+              f"factor(s) unavailable — overlay trained on a reduced set. Missing: {missing_required}",
+              file=sys.stderr, flush=True)
     aa_pred, nd = Z.AutoARIMA().nowcast(df, [], TS.TARGET)
     resid = _residual_history(df).reindex(df.index)
     d = df.copy(); d["resid"] = resid
@@ -62,7 +79,10 @@ def nowcast(df=None, live=None):
                 lgbm_resid=round(lgbm_resid, 3), overlay=round(overlay, 3),
                 tvp_contribution=round(LAMBDA*OVERLAY_WEIGHTS["tvp"]*float(tvp_resid), 3),
                 lgbm_contribution=round(LAMBDA*OVERLAY_WEIGHTS["lgbm"]*lgbm_resid, 3),
-                forecast=round(forecast, 3))
+                forecast=round(forecast, 3),
+                n_pinned=len(TS.PINNED), n_live=len(live or []),
+                live_factors=list(live or []), missing_factors=missing,
+                missing_required=missing_required, degraded=bool(missing_required))
 
 
 def main():
@@ -74,6 +94,13 @@ def main():
     print(f"  + TVP   ({LAMBDA*OVERLAY_WEIGHTS['tvp']:.2f}) : {nc['tvp_contribution']:+.3f}  (resid {nc['tvp_resid']})")
     print(f"  + LGBM  ({LAMBDA*OVERLAY_WEIGHTS['lgbm']:.2f}) : {nc['lgbm_contribution']:+.3f}  (resid {nc['lgbm_resid']})")
     print(f"  FORECAST    : {nc['forecast']}")
+    cov = f"{nc['n_live']}/{nc['n_pinned']} PINNED factors live"
+    if nc["degraded"]:
+        print(f"  ⚠ DEGRADED  : {cov} — unexpected missing {nc['missing_required']}")
+    elif nc["missing_factors"]:
+        print(f"  factors     : {cov} (expected-drop: {nc['missing_factors']})")
+    else:
+        print(f"  factors     : {cov}")
 
 
 if __name__ == "__main__":
