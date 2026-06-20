@@ -518,17 +518,8 @@ REGISTRY = {
         pub_lag=0, candidate=True, csv="slope_5s30s.csv",
         note="UK gilt 30y-5y slope (bp) from BoE GLC nominal spot curve (no local 30y). "
              "Long-end term-premium / fiscal-supply signal. pub_lag=0: daily."),
-    "uk_ppi_input": dict(
-        fetch=lambda: _ons_timeseries("GHIP", "economy/inflationandpriceindices"),
-        transform="logret", pub_lag=1, candidate=True, csv="uk_ppi_input.csv",
-        note="ONS UK manufacturing input PPI index (code GHIP, 1984+). logret = input "
-             "cost-push momentum. pub_lag=1: PPI released same day as CPI -> only prior "
-             "month available when nowcasting."),
-    "uk_ppi_output": dict(
-        fetch=lambda: _ons_timeseries("GB7S", "economy/inflationandpriceindices"),
-        transform="logret", pub_lag=1, candidate=True, csv="uk_ppi_output.csv",
-        note="ONS UK manufacturing output (factory-gate) PPI index (code GB7S, 1957+). "
-             "logret = pipeline output-price momentum -> CPI goods. pub_lag=1 (see input)."),
+    # uk_ppi_input / uk_ppi_output: single canonical defs further below (ONS GHIP/GB7S
+    # index via _ons_timeseries; transform="yoy"). Duplicate logret defs removed 2026-06-20.
     "oil_vol_6m": dict(
         fetch=lambda: np.log(_fred("DCOILBRENTEU")).diff().rolling(6).std(),
         transform="level", pub_lag=0, candidate=True, csv="oil_vol_6m.csv",
@@ -704,15 +695,13 @@ REGISTRY = {
              "Falls back to FRED LCEAMN01GBM661S (OECD, 1990+, slightly stale). "
              "Override: data/uk_awg.csv [date, value=YoY%]."),
     "uk_ppi_input": dict(
-        fetch=None, transform="yoy",
-        pub_lag=1, candidate=True, csv="uk_ppi_input.csv",
-        note="ONS PPI Input prices YoY (materials/fuels purchased by UK manufacturers). "
-             "pub_lag=1: released ~3-4 weeks after reference month. "
-             "Direct cost-push signal: input→output→CPI with 1-3m lag. "
-             "No free live API: ONS timeseries API decommissioned; MM22 dbnomics unavailable. "
-             "Download from ONS: https://www.ons.gov.uk/economy/inflationandpriceindices/"
-             "bulletins/producerpriceinflationnewformat/latest (series K37R, total input). "
-             "Drop data/uk_ppi_input.csv [date, value=YoY%]."),
+        fetch=lambda: _ons_timeseries("GHIP", "economy/inflationandpriceindices"),
+        transform="yoy", pub_lag=1, candidate=True, csv="uk_ppi_input.csv",
+        note="ONS UK manufacturing input PPI (index GHIP, 1984+); transform=yoy -> input "
+             "PPI inflation %. Cost-push signal (input->output->CPI, 1-3m lag). pub_lag=1: "
+             "PPI released same window as CPI -> only prior month known when nowcasting. "
+             "CSV (index levels) takes priority; live fetch = ONS timeseries API (GHIP). "
+             "PINNED production factor. (Single canonical def; duplicate removed 2026-06-20.)"),
     "uk_ftse250": dict(
         fetch=lambda: _yf("^FTMC"), transform="logret",
         pub_lag=0, candidate=True, csv="uk_ftse250.csv",
@@ -849,13 +838,12 @@ REGISTRY = {
              "Source: ONS CPI release Table 2. Series code in MM23: varies by vintage. "
              "Drop data/uk_core_cpi.csv [date, value=YoY%]."),
     "uk_ppi_output": dict(
-        fetch=None, transform="yoy",
-        pub_lag=1, candidate=True, csv="uk_ppi_output.csv",
-        note="ONS PPI Output prices YoY (home sales, series L3DW in MM22). "
-             "pub_lag=1: released ~3-4 weeks after reference month. "
-             "No free live API available (ONS timeseries API decommissioned). "
-             "Download from ONS PPI bulletin (series L3DW). "
-             "Drop data/uk_ppi_output.csv [date, value=YoY%]."),
+        fetch=lambda: _ons_timeseries("GB7S", "economy/inflationandpriceindices"),
+        transform="yoy", pub_lag=1, candidate=True, csv="uk_ppi_output.csv",
+        note="ONS UK manufacturing output (factory-gate) PPI (index GB7S, 1957+); "
+             "transform=yoy -> output PPI inflation %. pub_lag=1 (see uk_ppi_input). "
+             "CSV (index levels) priority; live fetch = ONS timeseries API (GB7S). "
+             "Candidate (not PINNED). (Single canonical def; duplicate removed 2026-06-20.)"),
     "uk_trimmed_mean_cpi": dict(
         fetch=None, transform="level",
         pub_lag=1, candidate=True, csv="uk_trimmed_mean_cpi.csv",
