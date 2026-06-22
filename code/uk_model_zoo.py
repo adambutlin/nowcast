@@ -29,6 +29,8 @@ import pandas as pd
 from sklearn.metrics import mean_squared_error
 from scipy.optimize import least_squares
 
+import validation as V
+
 warnings.filterwarnings("ignore")
 
 START_YEAR_DEFAULT = 2015
@@ -129,7 +131,7 @@ class BaseModel:
         raise NotImplementedError
 
     def backtest(self, df, factors, target, start_year=START_YEAR_DEFAULT,
-                min_train=24, end_year=None):
+                min_train=24, end_year=None, purge_horizon=0, embargo=0):
         d = _prep(df, factors, target)
         rows = []
         n_warns = 0
@@ -146,6 +148,10 @@ class BaseModel:
                     # fall back to the most-recent min_train rows before test start
                     pre = d[d.index.year < yr]
                     train = pre.iloc[-min_train:]
+            # Purge label-horizon overlap + embargo gap at the train/test boundary
+            # (no-op when purge_horizon=embargo=0; see validation.purge_embargo).
+            if purge_horizon or embargo:
+                train = V.purge_embargo(train, test_start, purge_horizon, embargo)
             test = d[d.index.year == yr]
             if len(train) < min_train or len(test) == 0:
                 continue

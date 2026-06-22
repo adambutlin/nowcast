@@ -32,6 +32,12 @@ REG = ["mpc_rate_change", "ofgem_cap_delta"]
 STAGE2 = [("bvar", Z.BVAR), ("tvp", Z.TVP), ("midas", Z.MIDAS)]   # TVP reinstated; weight via WEIGHTS
 WEIGHTS = {"bvar": 0.375, "tvp": 0.25, "midas": 0.375}   # TVP locked 0.25; BVAR/MIDAS via alloc_sweep.py
 AA_START, START, END, TRAIN_FROM = 2001, 2015, 2024, 1997
+# Purged + embargoed walk-forward: the residual target cpi_yoy is a 12-month
+# difference, so the last ≤12 training months share YoY information with the first
+# test months. Purge that label-horizon overlap (12m) + a 1m embargo so the OOS
+# metrics are leakage-honest. Backtest only — the live nowcast() legitimately uses
+# all residual history. See validation.purge_embargo / docs/superpowers/specs.
+PURGE_HORIZON, EMBARGO = 12, 1
 
 
 def _weighted_combo(members, weights):
@@ -65,7 +71,8 @@ def backtest(df, live):
     df["resid"] = (aa["actual"] - aa["pred"]).reindex(df.index)
     member_recon = {}
     for tag, cls in STAGE2:
-        bt = cls().backtest(df, live, "resid", start_year=START, end_year=END)
+        bt = cls().backtest(df, live, "resid", start_year=START, end_year=END,
+                            purge_horizon=PURGE_HORIZON, embargo=EMBARGO)
         if bt is not None and len(bt):
             recon = (aa["pred"].reindex(bt.index) + bt["pred"]).rename(tag)
             member_recon[tag] = recon
