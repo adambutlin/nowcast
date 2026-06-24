@@ -88,6 +88,28 @@ Every timing/switching/gating attempt was falsified out-of-sample:
 - Conclusion: **the fixed average is the answer; magnitude-shrinkage (λ), not regime-switching,
   is the only defensible "regime" adjustment.**
 
+## 11. Governance changelog (post-freeze)
+Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not a silent edit.
+
+- **2026-06-24 — Purged + embargoed overlay training.** The overlays now train on the
+  AutoARIMA-residual history with a López-de-Prado-style purge + embargo: residuals within
+  `PURGE_HORIZON=12 + EMBARGO=1 = 13` months of the nowcast month are excluded (the residual
+  target `cpi_yoy` is a 12-month difference, so the trailing months share the target's YoY
+  window → autocorrelation/regime-shift leakage). Helpers: `code/validation.py`
+  (`purge_embargo`, `embargo_series`). Backtest evaluation also purged via
+  `two_stage.backtest`; the model-zoo default stays off (`purge_horizon=0`).
+  - **Freeze lifted:** `_residual_history` previously capped residuals at `END=2024`, so no
+    post-2024 data could train and the embargo was inert. It now runs to the latest actual,
+    with the **embargo** (not a calendar freeze) bounding recency.
+  - **Boundary (chosen):** keep the 12+1 window. For the June-2026 nowcast the last training
+    month is **2025-04**; Jan–Apr 2025 newly enter training (residual history reaches 2026-05).
+  - **Forecast impact:** **2.871 → 2.686** (−0.185). TVP resid 0.641 → −0.067 (contribution
+    +0.160 → −0.017); LGBM resid −0.061 → −0.095. Driven by TVP: 2025-Q1 residuals pulled its
+    time-varying coefficients down from the positive 2024 regime. AA anchor unchanged (2.726).
+  - **Unchanged by design:** λ=0.5, members, weights. Diagnostic walk-forwards in `timing/`
+    (`residual_lgbm.py`, `may2026_reconstruction.py`) and the in-sample SHAP screen in
+    `retrain_pinned.py` were not modified.
+
 ---
 Entry point: `code/production/model.py`. Live evaluation: `code/production/
 {update_live_scorecard,generate_live_report}.py`, `data/live_scorecard.csv`, `docs/live_report.md`.
