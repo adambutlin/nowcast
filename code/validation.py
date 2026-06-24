@@ -20,7 +20,13 @@ rather than prevent leakage.
 
 Spec: docs/superpowers/specs/2026-06-22-purged-embargo-backtest-design.md
 """
+import numpy as np
 import pandas as pd
+
+
+def _cutoff_period(test_start, gap):
+    """The month strictly before which training data is kept (gap = horizon+embargo)."""
+    return pd.Period(pd.Timestamp(test_start), "M") - gap
 
 
 def purge_embargo(train, test_start, horizon=12, embargo=1):
@@ -45,6 +51,24 @@ def purge_embargo(train, test_start, horizon=12, embargo=1):
     # Month-granular so the result is independent of day-of-month (the index may be
     # month-start or month-end, and DateOffset preserves the day): keep training
     # months strictly earlier than `gap` calendar months before the test fold.
-    cutoff = pd.Period(pd.Timestamp(test_start), "M") - gap
+    cutoff = _cutoff_period(test_start, gap)
     keep = train.index.to_period("M") < cutoff
     return train[keep]
+
+
+def embargo_series(series, test_start, horizon=12, embargo=1):
+    """Blank (NaN) a target Series within the embargo window before ``test_start``.
+
+    Same boundary as :func:`purge_embargo`, but for a live-nowcast target column
+    that several models consume via ``dropna``: setting the trailing ``horizon +
+    embargo`` months to NaN makes every such model train only up to the embargo
+    boundary, without altering the feature rows. ``horizon=0, embargo=0`` is the
+    identity.
+    """
+    gap = int(horizon) + int(embargo)
+    if gap <= 0:
+        return series
+    cutoff = _cutoff_period(test_start, gap)
+    out = series.copy()
+    out[series.index.to_period("M") >= cutoff] = np.nan
+    return out

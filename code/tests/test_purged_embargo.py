@@ -59,6 +59,39 @@ class TestPurgeEmbargo:
         assert no_emb.index.max() == pd.Timestamp("2022-12-01")
 
 
+class TestEmbargoSeries:
+    """embargo_series blanks (NaN) a target Series within the embargo window so any
+    model training on it via dropna trains only up to the embargo boundary."""
+
+    def _resid(self):
+        idx = _monthly("2015-01-01", 132)          # 2015-01 .. 2025-12 (month-START)
+        return pd.Series(range(len(idx)), index=idx, dtype=float)
+
+    def test_identity_when_disabled(self):
+        s = self._resid()
+        out = V.embargo_series(s, pd.Timestamp("2026-06-30"), horizon=0, embargo=0)
+        pd.testing.assert_series_equal(out, s)
+
+    def test_blanks_window_keeps_earlier(self):
+        s = self._resid()
+        out = V.embargo_series(s, pd.Timestamp("2026-06-30"), horizon=12, embargo=1)
+        # cutoff = 2026-06 - 13 = 2025-05; blank months >= 2025-05, keep earlier.
+        assert pd.notna(out.loc[pd.Timestamp("2025-04-01")])      # kept
+        assert pd.isna(out.loc[pd.Timestamp("2025-05-01")])       # embargoed
+        assert pd.isna(out.loc[pd.Timestamp("2025-12-01")])       # embargoed
+        # untouched history is unchanged
+        assert (out.loc[:"2025-04-01"] == s.loc[:"2025-04-01"]).all()
+
+    def test_handles_month_end_index(self):
+        """nd is a month-end timestamp in production; boundary must be day-agnostic."""
+        idx = _monthly("2024-01-31", 30)           # month-END index 2024-01 .. 2026-06
+        s = pd.Series(range(len(idx)), index=pd.date_range("2024-01-31", periods=30, freq="ME"),
+                      dtype=float)
+        out = V.embargo_series(s, s.index[-1], horizon=12, embargo=1)   # nd = 2026-06-30
+        assert pd.notna(out.loc[pd.Timestamp("2025-04-30")])     # kept
+        assert pd.isna(out.loc[pd.Timestamp("2025-05-31")])      # embargoed
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # BaseModel.backtest integration — purge actually removes leakage
 # ─────────────────────────────────────────────────────────────────────────────

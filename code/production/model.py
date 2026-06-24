@@ -32,7 +32,9 @@ import validation as V
 # ── FROZEN SPEC ──────────────────────────────────────────────────────────────
 LAMBDA = 0.5
 OVERLAY_WEIGHTS = {"tvp": 0.5, "lgbm": 0.5}          # within the overlay
-AA_START, END = TS.AA_START, 2024                     # AA walk-forward / residual-train span
+AA_START, END = TS.AA_START, None                    # residuals run to the latest actual;
+#                                                      the embargo (not a 2024 freeze) bounds
+#                                                      how recent overlay training data may be.
 LGB = dict(n_estimators=300, learning_rate=0.02, num_leaves=7, max_depth=3,
            min_child_samples=12, subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
            random_state=0, verbose=-1)
@@ -81,7 +83,12 @@ def nowcast(df=None, live=None):
               f"factor(s) unavailable — overlay trained on a reduced set. Missing: {missing_required}",
               file=sys.stderr, flush=True)
     aa_pred, nd = Z.AutoARIMA().nowcast(df, [], TS.TARGET)
-    resid = _residual_history(df).reindex(df.index)
+    resid_full = _residual_history(df).reindex(df.index)
+    # Overlays train on residual history extended to the latest actual, but EMBARGOED:
+    # blank the trailing PURGE_HORIZON+EMBARGO months before nd so neither overlay trains
+    # into the YoY-autocorrelated window. Both TVP (via _prep dropna) and LGBM (via
+    # _lgbm_resid) then train only up to the embargo boundary. See validation.embargo_series.
+    resid = V.embargo_series(resid_full, nd, TS.PURGE_HORIZON, TS.EMBARGO)
     d = df.copy(); d["resid"] = resid
     tvp_resid, _ = Z.TVP().nowcast(d, live, "resid")
     lgbm_resid = _lgbm_resid(df, live, resid, nd)
