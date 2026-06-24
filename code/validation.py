@@ -42,5 +42,9 @@ def purge_embargo(train, test_start, horizon=12, embargo=1):
     gap = int(horizon) + int(embargo)
     if gap <= 0:
         return train
-    cutoff = pd.Timestamp(test_start) - pd.DateOffset(months=gap)
-    return train[train.index < cutoff]
+    # Month-granular so the result is independent of day-of-month (the index may be
+    # month-start or month-end, and DateOffset preserves the day): keep training
+    # months strictly earlier than `gap` calendar months before the test fold.
+    cutoff = pd.Period(pd.Timestamp(test_start), "M") - gap
+    keep = train.index.to_period("M") < cutoff
+    return train[keep]

@@ -27,6 +27,7 @@ sys.path.insert(0, _CODE); sys.path.insert(0, os.path.join(_CODE, "new_factors")
 import numpy as np, pandas as pd
 import lightgbm as lgb
 import uk_model_zoo as Z, two_stage as TS
+import validation as V
 
 # ── FROZEN SPEC ──────────────────────────────────────────────────────────────
 LAMBDA = 0.5
@@ -44,6 +45,20 @@ OPTIONAL_PINNED = {"global_supply_chain_pressure"}
 def _residual_history(df):
     aa = Z.AutoARIMA().backtest(df, [], TS.TARGET, start_year=AA_START, end_year=END)
     return (aa["actual"] - aa["pred"]).rename("resid")
+
+
+def _lgbm_resid(df, live, resid, nd):
+    """LGBM overlay on PURGED + EMBARGOED residual history, predicting month nd.
+
+    The residual target (cpi_yoy, a 12-month difference) is autocorrelated:
+    residuals within TS.PURGE_HORIZON months of nd share its YoY window. Purge that
+    label horizon + a TS.EMBARGO-month gap so the most-recent overlapping residuals
+    cannot leak regime-shift information into the overlay via autocorrelation.
+    See validation.purge_embargo / docs/superpowers/specs."""
+    data = pd.DataFrame(df[live]).join(resid.rename("resid")).dropna(subset=["resid"])
+    train = V.purge_embargo(data, pd.Timestamp(nd), TS.PURGE_HORIZON, TS.EMBARGO)
+    return float(lgb.LGBMRegressor(**LGB).fit(train[live], train["resid"])
+                 .predict(df.loc[[nd], live])[0])
 
 
 def nowcast(df=None, live=None):
@@ -69,9 +84,7 @@ def nowcast(df=None, live=None):
     resid = _residual_history(df).reindex(df.index)
     d = df.copy(); d["resid"] = resid
     tvp_resid, _ = Z.TVP().nowcast(d, live, "resid")
-    data = df[live].join(resid).dropna(subset=["resid"])
-    lgbm_resid = float(lgb.LGBMRegressor(**LGB).fit(data[live], data["resid"])
-                       .predict(df.loc[[nd], live])[0])
+    lgbm_resid = _lgbm_resid(df, live, resid, nd)
     overlay = OVERLAY_WEIGHTS["tvp"] * float(tvp_resid) + OVERLAY_WEIGHTS["lgbm"] * lgbm_resid
     forecast = float(aa_pred) + LAMBDA * overlay
     return dict(nowcast_date=str(pd.Timestamp(nd).date()), spec=SPEC, lam=LAMBDA,
