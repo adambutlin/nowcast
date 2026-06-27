@@ -1,206 +1,184 @@
-# nowcast
+# nowcast — UK CPI YoY two-stage nowcast
 
-## ⭐ FROZEN PRODUCTION MODEL (2026-06-19)
+A **reference-month nowcast of UK CPI all-items YoY** (ONS D7G7). The model completes at
+month-end **T** using only information dated **≤ T**; the official ONS print lands at **T+15…T+21**.
+The research phase is **closed and frozen** (2026-06-19) — the model is now evaluated
+prospectively, not modified. Everything below is the live specification; there is no hidden
+sauce, and the honest edge is small (see [§Performance](#the-models--walk-forward-rmse)).
+
+**Entry point:** [`code/production/model.py`](code/production/model.py) · **Spec:**
+[docs/final_model.md](docs/final_model.md) · **Model card:** [docs/MODEL_CARD.md](docs/MODEL_CARD.md)
+· **Live record:** [docs/live_report.md](docs/live_report.md)
+
+---
+
+## The multi-layer architecture
+
+The forecast is a univariate anchor plus a **shrunk residual overlay** — three models stacked
+in two stages, never a single black box.
 
 ```
-Forecast = AutoARIMA + 0.25·TVP + 0.25·LGBM
-         = AA + λ·Overlay,  Overlay = 0.5·TVP + 0.5·LGBM,  λ = 0.5
-```
-Entry point: **`code/production/model.py`**. Reference-month nowcast (info ≤ month-end T;
-release is T+15…T+21). The research phase is **closed** — evaluate prospectively, do not modify
-without a governance decision.
-
-- **Spec & rationale:** [docs/final_model.md](docs/final_model.md) · [docs/MODEL_CARD.md](docs/MODEL_CARD.md)
-- **Research summary:** [docs/final_research_summary.md](docs/final_research_summary.md) · [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md)
-- **Architecture / inventory:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/architecture_inventory.md](docs/architecture_inventory.md) · [docs/purge_candidates.md](docs/purge_candidates.md)
-- **Live evaluation:** `code/production/{update_live_scorecard,generate_live_report}.py` → `data/live_scorecard.csv`, [docs/live_report.md](docs/live_report.md)
-
-Governance: statistical optimum λ≈0.8, **production λ=0.5** (overlay is informative but
-~79% noise and overshoots in calm months — May-2026 genesis: AA 2.71 / actual 2.80 / λ=1
-overlay 3.11). Dropped BVAR+MIDAS (redundant); rejected all regime-switching/detector/HMM/
-latent-state/release-day approaches (falsified OOS). Everything below this banner is **legacy
-or research context**.
-
----
-
-> **Everything below this line is LEGACY / research context**, retained for reference only.
-> The production model is the banner above (`code/production/model.py`). The model-zoo,
-> `code/rates/` repricing pipeline, and `code/intramonth/` system were research scaffolding;
-> their findings were folded into the frozen model and all timing/regime/switching approaches
-> were falsified out-of-sample. See [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md),
-> [docs/architecture_inventory.md](docs/architecture_inventory.md), and
-> [docs/purge_candidates.md](docs/purge_candidates.md). Other docs:
-> [STATE](docs/STATE.md) · [SPEC](docs/SPEC.md) · [PROCESS](docs/PROCESS.md) ·
-> [HANDOFF](docs/handoff/HANDOFF.md).
-
----
-
-## UK CPI YoY Model Zoo *(legacy reference)*
-
-**Target:** UK CPI YoY (ONS D7G7.M via dbnomics, %)
-**Factors:** 30 live (26 pub_lag=0, 4 pub_lag≥1)
-**Mixed-frequency:** pub_lag applied per factor — financial data contemporaneous
-(pub_lag=0), ONS/economic stats lagged 1–2 months (pub_lag=1,2)
-**Backtest:** Expanding window 2015–2024 (blind test: 2025+ never evaluated)
-**Training start:** 1992 (post-ERM crisis)
-
-### Results (30-factor run, 2026-06-06)
-
-| Model             | RMSE  | MAE   | Dir%  | beats AR(1) |
-|-------------------|-------|-------|-------|-------------|
-| Combined-Static   | **0.310** | 0.246 | 89.2% | ✓ |
-| Combined-Dynamic  | 0.312 | 0.246 | 89.2% | ✓ |
-| Combined-Absolute | 0.313 | 0.250 | 89.2% | ✓ |
-| MedianElasticNet  | 0.345 | 0.240 | 91.9% | ✓ |
-| ElasticNet        | 0.353 | 0.263 | 89.2% | ✓ |
-| RegimeEns         | 0.466 | 0.349 | 86.5% | ✓ |
-| **AR(1) baseline**| **0.495** | 0.322 | 93.3% | — |
-| TVP               | 0.529 | 0.381 | 91.9% | — |
-| UCM               | 0.605 | 0.468 | 83.8% | — |
-| HuberNet          | 0.714 | 0.535 | 86.5% | — |
-| SARIMAX           | 0.857 | 0.658 | 81.1% | — |
-| PCR               | 0.865 | 0.654 | 89.2% | — |
-| DFM               | 1.100 | 0.758 | 91.9% | — |
-| RAMM-LGBM         | 2.170 | 1.351 | 91.9% | — |
-| HMM               | 2.807 | 1.824 | 91.9% | — |
-
-Combined-Static reduces RMSE by 37% vs AR(1) (0.310 vs 0.495).
-Backtest n=37 (quarterly step 2015–2024); DM test under-powered at this n.
-
-### Top Factor Importances (cross-model, 30-factor run)
-
-| Factor           | pub_lag | Signal across models |
-|------------------|---------|----------------------|
-| uk_rents_lag1    | 0       | #1 by large margin: UCM=2.185, TVP=1.098, GBM=1.932 |
-| metals_index     | 0       | UCM=0.264, TVP=0.195 — new factor, strong signal |
-| copper_price     | 0       | DFM=0.732 factor loading (new) |
-| gbp_eur          | 0       | TVP=0.154, ElasticNet=0.132 (new) |
-| uk_ftse250       | 0       | DFM=0.616, TVP=0.147 (new) |
-| chemicals_ppi    | 0       | ElasticNet=0.110 (new) |
-| uk_awg           | 1       | RAMM-LGBM=0.338 (new: ONS AWE KAB9) |
-| uk_monthly_gdp   | 1       | BVAR=0.088 (new: OECD industrial prod) |
-| cpi_lag1 / cpi_3m_chg | — | AR features auto-added by tree models |
-
-### Current Nowcast (May 2026)
-
-Consensus: **~2.5–2.8% YoY** (April actual: 3.5%)
-
-| Model             | May 2026 nowcast |
-|-------------------|-----------------|
-| Combined-Static   | ~2.78%          |
-| MedianElasticNet  | 2.79%           |
-| ElasticNet        | 2.80%           |
-| TVP               | 2.72%           |
-| UCM               | 2.61%           |
-
-### Factor Set
-
-**26 pub_lag=0 (financial/market, contemporaneous):**
-oil_brent, gbpusd, uk_be5, vix, gas_eu, uk_gilt_10y, oil_vol_6m, gbpusd_vol_6m,
-oil_brent_3m, gbpusd_3m, gbp_eur, gbp_eer, semiconductors_ppi, deep_sea_freight,
-metals_index, copper_price, nickel_price, iron_ore_price, timber_price,
-chemicals_ppi, uk_ftse250, uk_ftse100, food_price_index, wheat_price,
-vegetable_oil_price, uk_rents_lag1
-
-**4 pub_lag≥1 (ONS/economic stats, 1–2 month lag):**
-uk_monthly_gdp (lag=1), uk_awg (lag=1), uk_vacancies (lag=1), uk_house_prices (lag=2)
-
-### Regime-Model-Combine Framework
-
-Run with `--rmc` flag. Identifies regime labels (HMM, LSTAR, DFM, VIX-threshold),
-trains each model on regime-specific sub-samples, keeps only models that beat AR(1)
-within that regime, builds a metamodel that selects models based on the current
-regime signal.
-
----
-
-## Rates Repricing Pipeline (`code/rates/`)
-
-Tests one hypothesis: **does the CPI nowcast contain information about future UK
-rates repricing not already in consensus / market pricing?** Built on `alpha-gen`
-(tag `rates-alpha`).
-
-**Flow:** model forecast → event panel → forecast gap → Stage 1 (gap predicts
-realized surprise?) → Stage 2 (gap reprices rates?) → regime/confidence/risk
-production pipeline → 2Y gilt position.
-
-**Run:**
-```bash
-python -m rates.run_production              # config.MODEL (default HuberNet)
-RATES_MODEL=TVP python -m rates.run_production --compare
-python -c "from rates import event_panel,stage1; print(stage1.stage1_test(event_panel.build_event_panel()))"
+Forecast = AA + λ · Overlay,        λ = 0.5
+Overlay  = 0.5 · TVP + 0.5 · LGBM
+=>  Forecast = AutoARIMA + 0.25 · TVP(resid) + 0.25 · LGBM(resid)
 ```
 
-**Empirical verdicts (see STATE.md for detail):**
-- Stage 1 vs **market-implied** (BoE 2.5Y RPI curve) → `INVALID_MECHANICAL`
-  (horizon/index mismatch; guard rejects it).
-- Stage 1 vs **univariate consensus** (AutoARIMA) → PASS but economically tiny
-  (b=0.09, HAC t=3.0, OOS R²≈0.05); survives ex-2022/23 & ex-COVID, fails pre-2020.
-- Model sweep: TVP has the largest full-sample signal but it is a 2022-23
-  regime artifact; **HuberNet** is the most robust.
-- Production backtest is honestly negative (Sharpe ≈ −0.7 across all models); the
-  risk layer suppresses trading and the latest live recommendation is FLAT.
-- Posterior that the nowcast beats a real **survey** consensus: ~15%. Blocker =
-  point-in-time survey consensus data (licensed). Drop `data/consensus_cpi.csv`.
+| Layer | Model | Role | What it is *not* |
+|-------|-------|------|------------------|
+| **1 — anchor** | AutoARIMA on CPI YoY (univariate) | Level: persistence, seasonality, mean reversion, base-effect arithmetic. **≈96% of the print.** | — |
+| **2a — overlay** | TVP (time-varying-parameter regression on the residual) | Shock pass-through; the genuine **diversifier** (error-corr ≈0.69 vs ≈0.9 among the rejects). | a standalone forecaster — it loses to AA outside shock windows |
+| **2b — overlay** | LightGBM on the AA residual | Stable nonlinear **PPI / cost-push** map. Lowest-RMSE member; beats AA in 6/6 rolling 5y windows. | a rich multi-factor learner — ~90% of its edge is `uk_ppi_input` |
+| **3 — shrinkage** | λ = 0.5 | Magnitude haircut on the overlay. | a regime switch |
 
-Key modules: `event_panel.py`, `gates.py` (Gate1/Gate2), `stage1.py` (guarded),
-`market_implied.py`, `consensus.py`, `model_sweep.py`, `regime.py`,
-`prod_signal.py`, `risk.py`, `production.py`, `run_production.py`.
+**Why two stages, equal split, and a haircut.** The AA residual is the only thing the factors
+predict, and they predict it badly — the overlay is **~79% noise** (predictive R² ≈ 0.21). The
+statistical optimum is λ≈0.8, but production ships **λ = 0.5** as a deliberate governance haircut:
+it keeps ~all the full-sample edge (rel-RMSE 0.89 vs 0.87 at λ=1) while **halving the calm-month
+magnitude risk**. Equal TVP/LGBM weighting is used because in-sample weight optimisation overfits
+catastrophically out-of-sample.
 
----
+### What was removed or rejected (nothing hidden)
 
-## Files
+| Dropped | Why |
+|---------|-----|
+| **BVAR** | 0.91 error-corr with LGBM — redundant cost-push clone, no information, no model-risk insurance. |
+| **MIDAS** | Worst standalone member (RMSE 0.554), 0.89–0.93 corr with BVAR/LGBM. |
+| **HMM / regime-switch / detector / latent-state / release-day updating** | Every timing/switching/gating variant was **falsified out-of-sample** (AUC 0.37–0.58, DM-insignificant). A real ex-post shock/calm regime exists but is **not predictable ex-ante**; switching on predictions loses to fixed averaging. |
 
-| File | Description |
-|------|-------------|
-| `code/factors.py` | 38-factor registry, `apply_publication_lags()`, `factor_health()`, fetchers |
-| `code/uk_model_zoo.py` | 13 operational + 9 experimental models, `dm_test()`, `score_backtest()`, `nowcast()` |
-| `code/main.py` | Main CPI runner: backtest, `combine_recursive`, `common_sample_metrics`, RMC, nowcast |
-| `code/sweep_factors.py` | Forward factor-addition sweep |
-| `code/plot_nowcast_history.py` | Regenerates history plot from CSVs |
-| `code/rates/` | Rates-repricing pipeline (event panel → gates → production) |
-| `code/tests/` | `test_main.py`, `test_remediation.py`, `test_rates_*.py` (66 tests) |
-| `docs/STATE.md` | Current system state, last results, rates pipeline, pending work |
-| `docs/SPEC.md` | System specification and design decisions |
+Conclusion: the fixed average is the answer; **magnitude shrinkage (λ), not regime-switching,
+is the only defensible "regime" adjustment.** Rejected code is retained as research context only.
 
 ---
 
-## Adding New Factors
+## The factor hierarchy
 
-Drop a CSV in `data/<name>.csv` with columns `[date, value]`. Then register in `factors.py`:
+Factors flow through a hierarchy: a broad registry → SHAP-screened candidates → a **pinned
+production set of 8**, each placed in a **publication-lag tier** that fixes what information is
+legitimately available at month-end T.
 
-```python
-"my_factor": dict(
-    fetch=None,               # None = CSV-only, or lambda: _fred("SERIES_ID")
-    transform="level",        # "level" | "yoy" | "mom" | "logret" | "diff"
-    pub_lag=0,                # 0=financial, 1=ONS monthly, 2=quarterly
-    candidate=True,
-    csv="my_factor.csv",
-    note="Source description"),
+```
+factors.py REGISTRY (38 live)
+        │  candidate=True flag
+        ▼
+SHAP pre-2015 screen (look-ahead-free: screens on pre-backtest data only)
+        ▼
+PINNED = 8 production factors  →  build_matrix(): resample('ME').last() then shift(pub_lag)
 ```
 
+**Publication-lag tiers** — `pub_lag` is the number of months a series is shifted so a month-T row
+never uses information published after T:
+
+| Tier | pub_lag | Meaning | Pinned factors |
+|------|---------|---------|----------------|
+| **0 — contemporaneous** | 0 | Market / financial prices, available the day they print, weeks before the CPI release | `oil_brent` (logret), `gas_eu` (logret), `imf_all_commodity` (logret), `deep_sea_freight` (logret), `mpc_rate_change` (level), `ofgem_cap_delta` (diff) |
+| **1 — monthly ONS** | 1 | ONS monthly statistics, ~1 month behind | `uk_ppi_input` (yoy) — input PPI, the LGBM workhorse |
+| **2 — quarterly** | 2 | First preliminary quarterly estimate, ~6 weeks behind | `uk_quarterly_gdp` (yoy) |
+
+The two factors that **earned** their pin in the factor race were `uk_ppi_input` and
+`deep_sea_freight` (top-2 SHAP of the pinned set; univariate rel-RMSE 0.93 / 0.95). The same
+pub-lagged monthly matrix feeds both overlay members; AA uses CPI through the last released month.
+
+**Residual decomposition** (what the factors actually explain): PPI cost-push dominates calm
+months, the administered **Ofgem price cap** dominates shock months, spot energy is minor — and
+**~74% of the residual is unexplained** (food/services/idiosyncratic, outside the factor set).
+
 ---
 
-## Setup
+## Robustness: walk-forward, purge & embargo
+
+The model is evaluated and trained out-of-sample with explicit leakage controls.
+
+- **Expanding-window walk-forward.** AutoARIMA expands from 2001; the overlay residual history
+  expands from its vintage start. Evaluation window 2015–2024; **2025+ is a blind hold-out, never
+  used to fit or tune.**
+- **López-de-Prado purge + embargo** ([`code/validation.py`](code/validation.py),
+  `purge_embargo` / `embargo_series`). The residual target `cpi_yoy` is a **12-month** difference,
+  so the trailing months around the nowcast share its YoY window. Training therefore **purges
+  `PURGE_HORIZON = 12` months and embargoes a further `EMBARGO = 1`** (13 months total) before the
+  nowcast month, eliminating the autocorrelation / regime-shift leakage that a naïve cutoff would
+  admit. Adopted 2026-06-24; it moved the June-2026 nowcast **2.871 → 2.686** as 2025-Q1 residuals
+  legitimately pulled the TVP coefficients down.
+- **Information boundary.** Every factor is `resample('ME').last()` then `shift(pub_lag)`, so a
+  month-T row uses only data ≤ T-end. **No post-month-end and no post-release data enters; the
+  leakage audit reports 0 violations.** This is a reference-month nowcast, **not** a release-day or
+  T-30 product.
+
+---
+
+## The models — walk-forward RMSE
+
+Two-stage members and the wider comparison set, walk-forward 2015–2024 (corrected 2026-06-07:
+look-ahead-free SHAP screen, 38 factors; `n≈112`, AR(1) baseline `n=120`).
+
+| Model | RMSE | Role | In production |
+|-------|------|------|---------------|
+| **LGBM** (cost-push overlay) | **0.443** | Lowest-RMSE member; stable PPI map | ✅ |
+| AutoARIMA (anchor) | 0.467 | ~96% of the level | ✅ |
+| TVP (shock overlay) | 0.482 | Diversifier (low corr) | ✅ |
+| **AR(1) baseline** | **0.495** | benchmark | — |
+| MIDAS | 0.554 | redundant cost-push clone | ❌ dropped |
+| BVAR | 0.678 | redundant (0.91 corr w/ LGBM) | ❌ dropped |
+| RegimeEns ⚠ | 1.202 | 2020-21 COVID blow-up | ❌ rejected |
+
+**Combined forecast (production):** rel-RMSE ≈ **0.89** vs AutoARIMA on the full 2015–2024 sample
+(λ=0.5; ≈0.87 at λ=1). The full-sample improvement is **shock-concentrated (2022/23) and
+statistically insignificant — Diebold–Mariano p ≈ 0.17.** Treat the edge as modest and unproven
+out-of-sample, not established.
+
+---
+
+## Live nowcasts (prospective record)
+
+Scored from the genesis month forward in [`data/live_scorecard.csv`](data/live_scorecard.csv) →
+[docs/live_report.md](docs/live_report.md). Each release logs the anchor, the production model, the
+λ=1 experimental overlay, external consensus and a UCL comparison, then the realised actual.
+
+| release | AA | **final (prod)** | exp overlay (λ=1) | consensus | UCL | **actual** | prod error |
+|---------|----|----|----|----|----|----|----|
+| 2026-05 (genesis) | 2.71 | **2.91** | 3.11 | 3.00 | 3.05 | **2.80** | **+0.11** |
+
+**Honest genesis read.** May-2026 was a calm / base-effect month — exactly the documented failure
+mode. The production model (2.91) beat consensus (3.00), UCL (3.05) and the prior production build,
+and the λ=0.5 haircut halved the λ=1 overlay's error (3.11 → 2.91)... but **AutoARIMA alone (2.71)
+was the single best forecast.** One adverse point; the forward record decides.
+
+**Decision gate:** after ~12 prospective releases, judge final-production vs **AutoARIMA-only**.
+If it does not beat AA live, demote the overlay and ship AA alone.
+
+---
+
+## Run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install pandas numpy yfinance lightgbm shap scikit-learn statsmodels \
             fredapi requests openpyxl dbnomics pytest scipy xgboost
-```
-
-**UK model zoo:**
-```bash
 export FRED_API_KEY=your_key_here
-# Full backtest (blind test: --end 2024 enforced)
-python -W ignore code/main.py --start 2015 --end 2024 --train-from 1992 --shap-screen
-# With RMC (~5–10 min extra):
-python -W ignore code/main.py --start 2015 --end 2024 --train-from 1992 --shap-screen --rmc
-# Tests:
+
+# Production nowcast for the first unreleased reference month
+python -m code.production.model
+
+# Append the latest release to the live scorecard, then regenerate the report
+python code/production/update_live_scorecard.py
+python code/production/generate_live_report.py
+
+# Tests
 .venv/bin/python -m pytest code/tests/ -q
 ```
 
-**Rates pipeline:**
-```bash
-python -m rates.run_production --compare
-```
+| Path | What |
+|------|------|
+| [`code/production/model.py`](code/production/model.py) | Frozen `Forecast = AA + 0.25·TVP + 0.25·LGBM` |
+| [`code/validation.py`](code/validation.py) | `purge_embargo`, `embargo_series` (López-de-Prado controls) |
+| [`code/factors.py`](code/factors.py) | Factor registry, `PINNED` set, pub-lag application |
+| [`code/production/update_live_scorecard.py`](code/production/update_live_scorecard.py) · [`generate_live_report.py`](code/production/generate_live_report.py) | Prospective scoring |
+
+---
+
+## Governance
+
+Frozen 2026-06-19. Members (AA, TVP, LGBM), weights (equal overlay) and λ=0.5 change only by a
+**governance decision**, not a code edit; the post-freeze changelog (incl. the purge+embargo
+adoption) lives in [docs/final_model.md](docs/final_model.md) §11. Inputs are accredited ONS
+series and market prices (no revision/leakage); the model is research / decision-support reported
+**alongside** AutoARIMA, not a standalone trading signal.
