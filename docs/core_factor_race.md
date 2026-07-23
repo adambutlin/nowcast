@@ -43,7 +43,25 @@ also dropped CPI-family and redundant clones.
 already captures most of it. Whether the *combined* 3-factor overlay actually beats AA-only
 out-of-sample is decided by the purged+embargoed validation gate (T7 below).
 
-## T7 — validation gate result
+## T6 — calibration
 
-_(filled in by the validation run: core overlay vs AA-only walk-forward rel-RMSE + DM p-value, and
-the ship/fallback decision.)_
+Priors adopted (equal TVP/LGBM 0.5/0.5 + λ=0.5 governance haircut), the same as headline. Validated
+by the gate below: the equal combo (rel 0.969) beats either member alone (LGBM 0.972, TVP 1.016), so
+weight-optimization is unnecessary — and the headline research established it overfits OOS. λ=0.5 is
+the deliberate calm-month haircut (statistical optimum is higher), kept for governance consistency.
+
+## T7 — validation gate result → **SHIP**
+
+Purged+embargoed walk-forward (PURGE_HORIZON=12, EMBARGO=1), 2015-2024, n=112 months:
+
+| model | RMSE | rel-RMSE | note |
+|---|---|---|---|
+| AA-only (core) | 0.3239 | 1.000 | anchor baseline |
+| **AA + 0.5·(0.5·TVP+0.5·LGBM)** | **0.3138** | **0.969** | **shipped** |
+| — LGBM member recon | 0.3150 | 0.972 | workhorse |
+| — TVP member recon | 0.3290 | 1.016 | flat alone; diversifies |
+
+Diebold–Mariano overlay-vs-AA: **DM = 1.884, one-sided p = 0.030** (overlay significantly beats AA at
+5%). **Decision: SHIP** the core overlay (`CORE.pinned` = output-PPI, monthly-GDP, GBP-EER; λ=0.5).
+The edge is modest (core is highly persistent, and the strongest core drivers — wages, PMIs,
+inflation expectations — are unavailable), but it is real and leakage-honest.
