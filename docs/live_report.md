@@ -2,42 +2,43 @@
 
 Production model: **AA + 0.25·TVP + 0.25·LGBM** (λ=0.5). Genesis: May 2026.
 
-Releases scored: **1** | forecasts logged: 1
+Releases scored: **2** | forecasts logged: 2
 
 ## Cumulative accuracy
 
 | forecaster | n | RMSE | MAE | beats AA | beats consensus |
 |---|---|---|---|---|---|
-| aa | 1 | 0.090 | 0.090 |  | 100% |
-| current_production | 1 | 0.117 | 0.117 | 0% | 100% |
-| final_production | 1 | 0.110 | 0.110 | 0% | 100% |
-| consensus | 1 | 0.200 | 0.200 | 0% |  |
+| aa | 2 | 0.109 | 0.108 |  | 50% |
+| current_production | 2 | 0.250 | 0.225 | 0% | 50% |
+| final_production | 2 | 0.097 | 0.097 | 50% | 100% |
+| consensus | 2 | 0.158 | 0.150 | 50% |  |
 | ucl | 1 | 0.250 | 0.250 | 0% | 0% |
-| experimental_overlay | 1 | 0.311 | 0.311 | 0% | 0% |
+| experimental_overlay | 2 | 0.222 | 0.175 | 50% | 50% |
 
 ## Final production — hit rate
 
-- beats AutoARIMA : 0%
+- beats AutoARIMA : 50%
 - beats consensus : 100%
-- beats UCL       : 100%
+- beats UCL       : 50%
 - beats current-prod: 100%
 
 ## Rolling 6-release RMSE
 
 | forecaster | rolling-6 RMSE |
 |---|---|
-| aa | 0.090 |
-| current_production | 0.117 |
-| final_production | 0.110 |
-| consensus | 0.200 |
+| aa | 0.109 |
+| current_production | 0.250 |
+| final_production | 0.097 |
+| consensus | 0.158 |
 | ucl | 0.250 |
-| experimental_overlay | 0.311 |
+| experimental_overlay | 0.222 |
 
 ## Per-release (signed error)
 
 | month | AA | curr-prod | **final** | consensus | UCL | exp(λ=1) | actual |
 |---|---|---|---|---|---|---|---|
 | 2026-05 | 2.71 | 2.92 | **2.91** | 3.00 | 3.05 | 3.11 | 2.80 |
+| 2026-06 | 2.73 | 2.93 | **2.68** | 2.70 | nan | 2.64 | 2.60 |
 
 ## May 2026 — GENESIS (permanent record, not reinterpreted)
 
