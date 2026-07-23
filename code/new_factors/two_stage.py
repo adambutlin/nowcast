@@ -19,6 +19,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, pandas as pd
 import factors as F, uk_model_zoo as Z
+from targets import Target, HEADLINE   # per-target config; HEADLINE == the frozen params below
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _OUT = os.path.join(_ROOT, "data", "new_factors")
@@ -51,16 +52,28 @@ def _weighted_combo(members, weights):
     return (M.fillna(0) * w.values).sum(axis=1) / denom
 
 
-def load_matrix(pinned=None):
-    pinned = PINNED if pinned is None else pinned
-    raw, status = F.build_matrix(names=pinned + [TARGET])
+def load_matrix(pinned=None, target: Target = HEADLINE):
+    """Build the pub-lagged month-end factor matrix for `target`. Default HEADLINE reproduces
+    the frozen headline matrix exactly; pass target=targets.CORE for the core pipeline."""
+    pinned = list(target.pinned) if pinned is None else pinned
+    raw, status = F.build_matrix(names=pinned + [target.name])
     live = [n for n in pinned if status.get(n) != "unavailable"]
     raw = raw[raw.index.year >= TRAIN_FROM]
     df = F.apply_publication_lags(raw, live)
-    for rf in REG:
+    for rf in target.reg:
         if rf in df.columns:
             df[rf] = df[rf].fillna(0)
-    return df.resample("ME").last(), live, status
+    df = df.resample("ME").last()
+    # Ensure the matrix extends one month past the last target actual so nowcast() always has a
+    # month to forecast — even for AA-only targets with no factors extending the ragged edge
+    # (e.g. core CPI before an overlay is shipped). No-op when factors already extend it (headline:
+    # live market factors reach the current month, so the target's next month is already present).
+    known = df[target.name].dropna() if target.name in df.columns else df.iloc[0:0]
+    if len(known):
+        nxt = known.index[-1] + pd.offsets.MonthEnd(1)
+        if nxt not in df.index:
+            df = df.reindex(df.index.union([nxt]))
+    return df, live, status
 
 
 def backtest(df, live):
