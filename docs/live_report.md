@@ -43,3 +43,21 @@ Releases scored: **2** | forecasts logged: 2
 ## May 2026 — GENESIS (permanent record, not reinterpreted)
 
 First true prospective observation. Final production 2.91 vs actual 2.80 (err +0.11). AutoARIMA 2.71 (err −0.09) was best; the λ=1 experimental overlay (3.11) was worst — a calm/base-effect month where the cost-push overlay overshot. λ=0.5 halved that error vs λ=1. One adverse point; the forward record decides.
+
+---
+
+## Core CPI nowcast (ex energy, food, alcohol & tobacco)
+
+Core model: **AA + 0.25·TVP + 0.25·LGBM** on output-PPI + GBP-EER (λ=0.5); validation rel-RMSE **0.952** (DM p=0.003, n=120). See docs/core_factor_race.md.
+
+Releases scored: **1**
+
+| forecaster | n | RMSE | MAE |
+|---|---|---|---|
+| core_aa | 1 | 0.112 | 0.112 |
+| core_final | 1 | 0.106 | 0.106 |
+| core_consensus | 1 | 0.100 | 0.100 |
+
+| month | core AA | **core final** | consensus | actual |
+|---|---|---|---|---|
+| 2026-06 | 2.49 | **2.49** | 2.50 | 2.60 |

@@ -20,6 +20,30 @@ def m(err):
             float(e.abs().mean()) if len(e) else np.nan)
 
 
+def core_section():
+    """Render the Core CPI scorecard from data/live_scorecard_core.csv (parallel file)."""
+    scc = os.path.join(_ROOT, "data", "live_scorecard_core.csv")
+    if not os.path.exists(scc):
+        return []
+    cdone = pd.read_csv(scc)
+    cdone = cdone[cdone["actual"].notna()]
+    if len(cdone) == 0:
+        return []
+    L = ["", "---", "", "## Core CPI nowcast (ex energy, food, alcohol & tobacco)", "",
+         "Core model: **AA + 0.25·TVP + 0.25·LGBM** on output-PPI + GBP-EER (λ=0.5); "
+         "validation rel-RMSE **0.952** (DM p=0.003, n=120). See docs/core_factor_race.md.", "",
+         f"Releases scored: **{len(cdone)}**", "",
+         "| forecaster | n | RMSE | MAE |", "|---|---|---|---|"]
+    for f in ["core_aa", "core_final", "core_consensus"]:
+        n, r, ma = m(cdone[f"{f}_error"])
+        L.append(f"| {f} | {n} | {r:.3f} | {ma:.3f} |")
+    L += ["", "| month | core AA | **core final** | consensus | actual |", "|---|---|---|---|---|"]
+    for _, r in cdone.iterrows():
+        L.append(f"| {r['release_month']} | {r['core_aa']:.2f} | **{r['core_final']:.2f}** | "
+                 f"{r['core_consensus']:.2f} | {r['actual']:.2f} |")
+    return L
+
+
 def main():
     df = pd.read_csv(SC)
     done = df[df["actual"].notna()].copy()
@@ -62,6 +86,7 @@ def main():
               "(err +0.11). AutoARIMA 2.71 (err −0.09) was best; the λ=1 experimental overlay "
               "(3.11) was worst — a calm/base-effect month where the cost-push overlay overshot. "
               "λ=0.5 halved that error vs λ=1. One adverse point; the forward record decides."]
+    L += core_section()
     open(REP, "w").write("\n".join(L) + "\n")
     print("wrote", REP); print("\n".join(L))
 
