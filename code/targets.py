@@ -30,14 +30,15 @@ HEADLINE = Target(
     overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
     aa_start=2001, start=2015, end=None)
 
-# CORE pinned set from the factor race (docs/core_factor_race.md, 2026-07-23): the exogenous
-# candidates that beat AA-only alone on a walk-forward (univ_rel_rmse<1) — output PPI, monthly GDP
-# (slack), and the sterling effective rate (import-price channel). uk_cpih (0.938) beat these but is
-# EXCLUDED as near-circular with core (CPIH contains the same items). The PMI/wages/inflation-swap
-# candidates are unavailable (no free data source). Edges are marginal (0.966-0.996) -> the T7
-# validation gate decides whether this overlay actually ships or core reverts to AA-only.
+# CORE pinned set from the factor race (docs/core_factor_race.md, 2026-07-23): exogenous candidates
+# that beat AA-only alone on a walk-forward (univ_rel_rmse<1) AND are reliably timely for the live
+# nowcast — output PPI (factory-gate goods) and the sterling effective rate (import-price channel).
+# uk_monthly_gdp beat AA historically (0.988) but its dbnomics series is DEAD (ends 2024-03), so it
+# is dropped — a factor must be live-timely, not just backtest-valid. uk_cpih (0.938) excluded as
+# near-circular; wages/PMI/inflation-swap candidates unavailable (no free source). The T7 gate
+# re-validated this 2-factor overlay: rel-RMSE < 1 -> ships. Marginal edge (core is highly persistent).
 CORE = Target(
     name="uk_core_cpi", label="Core CPI YoY (ex energy, food, alcohol & tobacco)",
-    pinned=("uk_ppi_output", "uk_monthly_gdp", "gbp_eer"),
+    pinned=("uk_ppi_output", "gbp_eer"),
     overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
     aa_start=2001, start=2015, end=None)

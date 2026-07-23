@@ -30,9 +30,14 @@ much the core overlay can add. Recorded as a known data limitation.
 
 ## Pinning decision
 
-**Pinned (exogenous, univ_rel_rmse < 1):** `uk_ppi_output` (0.966), `uk_monthly_gdp` (0.988),
-`gbp_eer` (0.996) — output PPI (factory-gate goods prices), monthly GDP (demand slack), and the
-sterling effective rate (import-price channel into core goods).
+**Pinned (exogenous, univ_rel_rmse < 1, AND reliably live-timely):** `uk_ppi_output` (0.966) and
+`gbp_eer` (0.996) — output PPI (factory-gate goods prices) and the sterling effective rate
+(import-price channel into core goods).
+
+**Dropped for staleness:** `uk_monthly_gdp` (0.988) beat AA historically but its dbnomics series is
+**dead — ends 2024-03** (2+ years stale), so it cannot feed a live nowcast. A factor must be
+live-timely, not merely backtest-valid. Removing it also *improved* the overlay (rel-RMSE 0.969 →
+0.952), since its stale/ffilled values had been adding noise.
 
 **Excluded despite beating AA:** `uk_cpih` (0.938) — CPIH contains the same items as core plus
 owner-occupier housing, so pinning it would make the overlay partly track a contemporaneous CPI
@@ -52,16 +57,19 @@ the deliberate calm-month haircut (statistical optimum is higher), kept for gove
 
 ## T7 — validation gate result → **SHIP**
 
-Purged+embargoed walk-forward (PURGE_HORIZON=12, EMBARGO=1), 2015-2024, n=112 months:
+Purged+embargoed walk-forward (PURGE_HORIZON=12, EMBARGO=1), 2015-2024, n=120 months, final
+2-factor overlay (`uk_ppi_output`, `gbp_eer`):
 
 | model | RMSE | rel-RMSE | note |
 |---|---|---|---|
-| AA-only (core) | 0.3239 | 1.000 | anchor baseline |
-| **AA + 0.5·(0.5·TVP+0.5·LGBM)** | **0.3138** | **0.969** | **shipped** |
-| — LGBM member recon | 0.3150 | 0.972 | workhorse |
-| — TVP member recon | 0.3290 | 1.016 | flat alone; diversifies |
+| AA-only (core) | 0.3213 | 1.000 | anchor baseline |
+| **AA + 0.5·(0.5·TVP+0.5·LGBM)** | **0.3059** | **0.952** | **shipped** |
+| — LGBM member recon | 0.3015 | 0.939 | workhorse |
+| — TVP member recon | 0.3154 | 0.982 | diversifies |
 
-Diebold–Mariano overlay-vs-AA: **DM = 1.884, one-sided p = 0.030** (overlay significantly beats AA at
-5%). **Decision: SHIP** the core overlay (`CORE.pinned` = output-PPI, monthly-GDP, GBP-EER; λ=0.5).
-The edge is modest (core is highly persistent, and the strongest core drivers — wages, PMIs,
-inflation expectations — are unavailable), but it is real and leakage-honest.
+Diebold–Mariano overlay-vs-AA: **DM = 2.726, one-sided p = 0.003** (overlay beats AA well beyond the
+5% bar). **Decision: SHIP** the core overlay (`CORE.pinned` = output-PPI, GBP-EER; λ=0.5). The edge
+is modest (core is highly persistent, and the strongest core drivers — wages, PMIs, inflation
+expectations — are unavailable), but it is real, leakage-honest, and live-robust.
+
+Live June-2026 core nowcast: **2.494** (AA 2.488 + overlay +0.006). Headline unchanged at 2.683.
