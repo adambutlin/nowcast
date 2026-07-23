@@ -832,11 +832,12 @@ REGISTRY = {
              "Services inflation is sticky and a leading indicator of future CPI. "
              "Drop data/uk_services_cpi.csv if fetch fails."),
     "uk_core_cpi": dict(
-        fetch=None, transform="level",
-        pub_lag=1, candidate=True, csv="uk_core_cpi.csv",
-        note="ONS CPI ex food and energy YoY. CSV drop-in only. "
-             "Source: ONS CPI release Table 2. Series code in MM23: varies by vintage. "
-             "Drop data/uk_core_cpi.csv [date, value=YoY%]."),
+        fetch=lambda: _dbnomics("ONS", "MM23", "DKO8.M"),
+        transform="level", pub_lag=1, candidate=True, csv="uk_core_cpi.csv",
+        note="ONS CPI 12mth excl energy, food, alcohol & tobacco (MM23 DKO8) via dbnomics — "
+             "core CPI YoY, history from 1989. CSV drop-in fallback data/uk_core_cpi.csv "
+             "[date, value=YoY%]; like cpi_yoy.csv, the CSV is truncated to the last RELEASED "
+             "month so the core nowcast targets the same reference month as headline."),
     "uk_ppi_output": dict(
         fetch=lambda: _ons_timeseries("GB7S", "economy/inflationandpriceindices"),
         transform="yoy", pub_lag=1, candidate=True, csv="uk_ppi_output.csv",
