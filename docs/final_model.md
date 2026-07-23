@@ -110,7 +110,27 @@ Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not
     (`residual_lgbm.py`, `may2026_reconstruction.py`) and the in-sample SHAP screen in
     `retrain_pinned.py` were not modified.
 
+## 12. Core CPI nowcast (dual output, added 2026-07-23)
+
+`model.py` now prints a **second** nowcast alongside headline: **Core CPI YoY** (ex energy, food,
+alcohol & tobacco; ONS MM23 **DKO8**). The pipeline is parameterized by `targets.Target`
+(`HEADLINE` / `CORE`); the headline path is byte-identical (regression-locked: June-2026 = 2.683).
+
+- **Same architecture**, core-specific factors: `Core = AA + 0.5·(0.5·TVP + 0.5·LGBM)` (λ=0.5) on a
+  **core-specific pinned set** — `uk_ppi_output` + `gbp_eer`. These are the only live-timely exogenous
+  factors that beat AA-only in the core factor race. `uk_monthly_gdp` beat AA historically but its
+  dbnomics series is dead (ends 2024-03); `uk_cpih` beat AA but is excluded as near-circular; the
+  strongest core drivers (wages, PMIs, inflation swaps) have no free data source.
+- **Validation gate (headline-grade):** purged+embargoed walk-forward 2015-2024 (n=120), core overlay
+  **rel-RMSE 0.952** vs AA-only, **Diebold-Mariano p = 0.003** → the overlay **ships** (else core would
+  print AA-only). Edge is modest — core is highly persistent, so the AA anchor already does most of it.
+- **First observation (June-2026):** core nowcast **2.494** vs actual **2.6** (err −0.106), ≈ consensus;
+  the overlay was near-flat this calm month. Tracked in `data/live_scorecard_core.csv`.
+- **Evidence:** `docs/core_factor_race.md` (race + calibration + gate); figures `plots/core/*.png`;
+  research code `code/new_factors/core_race.py`, `core_validate.py`; config `code/targets.py`.
+
 ---
-Entry point: `code/production/model.py`. Live evaluation: `code/production/
-{update_live_scorecard,generate_live_report}.py`, `data/live_scorecard.csv`, `docs/live_report.md`.
-Full evidence trail: `docs/timing_*.md`, `docs/new_factors_*.md`, `docs/reg_detect_*.md`.
+Entry point: `code/production/model.py` (prints headline + core). Live evaluation: `code/production/
+{update_live_scorecard,generate_live_report,core_scorecard}.py`, `data/live_scorecard{,_core}.csv`,
+`docs/live_report.md`. Full evidence trail: `docs/timing_*.md`, `docs/new_factors_*.md`,
+`docs/core_factor_race.md`, `docs/reg_detect_*.md`.

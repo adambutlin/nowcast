@@ -17,6 +17,14 @@ Monthly point nowcast of UK CPI YoY for the first unreleased reference month, as
 decision-support** estimate reported alongside AutoARIMA. Not a standalone trading signal
 (rates pipeline found no deployable edge; the CPI edge is modest and shock-concentrated).
 
+## Core CPI (dual output, added 2026-07-23)
+`model.py` also prints a **Core CPI YoY** nowcast (ex energy, food, alcohol & tobacco; ONS DKO8),
+same architecture on a core-specific pinned set (`uk_ppi_output` + `gbp_eer`; λ=0.5). Headline output
+is unchanged/byte-identical. Core overlay passed a headline-grade purged+embargoed gate (rel-RMSE
+**0.952**, DM p=0.003, 2015-2024); else it would print AA-only. Genesis June-2026: core 2.494 vs
+actual 2.6. Details: `docs/core_factor_race.md`, figures `plots/core/`. Tracked in
+`data/live_scorecard_core.csv`.
+
 ## Performance (walk-forward 2015-2024, vs AutoARIMA)
 - rel-RMSE ≈ **0.89** full sample (λ=0.5); edge concentrated in 2022/23, ~neutral in calm.
 - **Statistically insignificant overall (DM p≈0.17)** — treat as modest, not proven.
