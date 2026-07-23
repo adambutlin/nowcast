@@ -15,9 +15,12 @@ def test_headline_nowcast_byte_identical():
     assert nc["degraded"] is False
 
 
-def test_core_prints_aa_only_for_now():
+def test_core_nowcast_targets_june():
+    """Core produces a finite June nowcast (overlay or AA-only per the T7 gate)."""
+    import math
     nc = M.nowcast(target=T.CORE)
     assert nc["target"] == "uk_core_cpi"
     assert nc["nowcast_date"] == "2026-06-30"              # core CSV truncated to May -> targets June
-    assert nc["n_pinned"] == 0                             # AA-only until the race ships an overlay
-    assert nc["forecast"] == nc["aa"]
+    assert math.isfinite(nc["forecast"])
+    if nc["n_pinned"] == 0:                                # AA-only fallback
+        assert nc["forecast"] == nc["aa"]

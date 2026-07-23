@@ -30,10 +30,14 @@ HEADLINE = Target(
     overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
     aa_start=2001, start=2015, end=None)
 
-# CORE: pinned/weights/lam are PRIORS; the research phases (T5/T6) overwrite `pinned` and may
-# adjust `lam`. aa_start/start are refined in T4 once core history depth is known. Empty `pinned`
-# means the core nowcast prints AA-only until the factor race + validation gate ship an overlay.
+# CORE pinned set from the factor race (docs/core_factor_race.md, 2026-07-23): the exogenous
+# candidates that beat AA-only alone on a walk-forward (univ_rel_rmse<1) — output PPI, monthly GDP
+# (slack), and the sterling effective rate (import-price channel). uk_cpih (0.938) beat these but is
+# EXCLUDED as near-circular with core (CPIH contains the same items). The PMI/wages/inflation-swap
+# candidates are unavailable (no free data source). Edges are marginal (0.966-0.996) -> the T7
+# validation gate decides whether this overlay actually ships or core reverts to AA-only.
 CORE = Target(
     name="uk_core_cpi", label="Core CPI YoY (ex energy, food, alcohol & tobacco)",
-    pinned=(), overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
+    pinned=("uk_ppi_output", "uk_monthly_gdp", "gbp_eer"),
+    overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
     aa_start=2001, start=2015, end=None)
