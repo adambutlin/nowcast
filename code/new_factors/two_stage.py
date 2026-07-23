@@ -11,7 +11,8 @@ Two-stage UK CPI-YoY forecaster — FINAL fixed architecture.
 
 Walk-forward (expanding window) backtest + live nowcast for the first unreleased month.
 Outputs: data/new_factors/backtest.csv, metrics.csv, nowcast.csv
-Run: set -a; . ./.env; set +a; PYTHONPATH=code .venv/bin/python -u code/new_factors/two_stage.py
+Run (ONLY the `quant` conda env, never .venv/base — slow imports):
+  set -a; . ./.env; set +a; PYTHONPATH=code /opt/anaconda3/envs/quant/bin/python -u code/new_factors/two_stage.py
 """
 import os, sys, warnings
 warnings.filterwarnings("ignore")

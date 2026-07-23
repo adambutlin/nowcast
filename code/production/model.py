@@ -17,8 +17,8 @@ Members (all from uk_model_zoo, factors from factors.py PINNED set):
   LGBM = LightGBM on AA resid (cost-pressure / PPI overlay; stable nonlinear)
 NOT regime-switching / detector / HMM / release-day-updating / latent-state. (See governance.)
 
-Run (prints current nowcast):
-  set -a; . ./.env; set +a; PYTHONPATH=code .venv/bin/python -u code/production/model.py
+Run (prints current nowcast) — ONLY use the `quant` conda env, never .venv/base (slow imports):
+  set -a; . ./.env; set +a; PYTHONPATH=code /opt/anaconda3/envs/quant/bin/python -u code/production/model.py
 """
 import os, sys, warnings
 warnings.filterwarnings("ignore")

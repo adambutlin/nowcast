@@ -149,21 +149,27 @@ If it does not beat AA live, demote the overlay and ship AA alone.
 
 ## Run
 
+> ### ⚠️ ONLY use the `quant` conda env — never `base` or the project `.venv`
+>
+> On this Mac the project `.venv` (and conda `base`) hit **pathologically slow Python imports**
+> (`import pandas` takes 10–16 min; runs appear to hang). The `quant` conda env
+> (`/opt/anaconda3/envs/quant`) imports the full stack in ~3.5 s. **Always run with `quant`.**
+> It has every dependency (`lightgbm` + `fredapi` were added 2026-07-22; `pmdarima` is not needed).
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install pandas numpy yfinance lightgbm shap scikit-learn statsmodels \
-            fredapi requests openpyxl dbnomics pytest scipy xgboost
-export FRED_API_KEY=your_key_here
+Q=/opt/anaconda3/envs/quant/bin/python          # the ONLY interpreter to use here
+
+export FRED_API_KEY=your_key_here               # or: set -a; . ./.env; set +a
 
 # Production nowcast for the first unreleased reference month
-python -m code.production.model
+PYTHONPATH=code $Q -u code/production/model.py
 
 # Append the latest release to the live scorecard, then regenerate the report
-python code/production/update_live_scorecard.py
-python code/production/generate_live_report.py
+$Q code/production/update_live_scorecard.py
+$Q code/production/generate_live_report.py
 
 # Tests
-.venv/bin/python -m pytest code/tests/ -q
+$Q -m pytest code/tests/ -q
 ```
 
 | Path | What |
