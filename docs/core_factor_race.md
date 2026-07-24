@@ -21,12 +21,25 @@ uk_rents           exogenous  120    0.1297         1.0314         0.0753
 uk_awg             exogenous  120    0.2032         1.0403         0.0918
 ```
 
-## Unavailable candidates (no free data source)
+## Candidate availability (corrected 2026-07-24)
 
-`uk_ashe_pay`, `uk_paye` (wages), `uk_pmi_services`, `uk_pmi_composite`, `uk_pmi_input_prices`
-(Markit — paid), `uk_infl_swap_1y` (Bloomberg), `uk_trimmed_mean_cpi`, `uk_hciall`. These are the
-theoretically strongest core drivers (wages, expectations, survey prices); their absence caps how
-much the core overlay can add. Recorded as a known data limitation.
+Not a flat "no free data" — the missing candidates split into three tiers:
+
+- **Free & already tested — wages.** Monthly wages via ONS **AWE** (`uk_awg`, KAB9 whole-economy
+  pay, live to May-2026) ARE in the race and scored **rel-RMSE 1.040** — they do NOT beat AA. So
+  wages are not a missing free lever; the free monthly wage signal is present and simply doesn't help
+  core. (Earlier "wages have no free source" wording was wrong.)
+- **Free but low-value / unused.** `uk_ashe_pay` is free (ONS) but **annual** (ASHE — one release a
+  year), a poor fit for a monthly nowcast and dominated by the monthly AWE that already failed. ONS
+  **PAYE RTI median monthly pay** is free + monthly and currently UNUSED (`uk_paye` is only the
+  payroll *count*, not pay); a cheap future test, though AWE's failure tempers expectations.
+- **Licensed — available via LSEG Workspace, not wired here.** The S&P Global (Markit) PMIs
+  (`uk_pmi_services` / `uk_pmi_composite` / `uk_pmi_input_prices`) and the 1y inflation swap
+  (`uk_infl_swap_1y`) are the genuinely missing drivers (cost-push + expectations). They are carried
+  by LSEG Workspace under licence, but this env has **no LSEG SDK** (`lseg-data` / `refinitiv-data` /
+  `eikon` all absent) and no reachable Workspace session — so they cannot be fetched here yet.
+
+CPI-family (`uk_trimmed_mean_cpi`, `uk_hciall`) are near-circular with core and excluded on principle.
 
 ## Pinning decision
 
@@ -69,7 +82,23 @@ Purged+embargoed walk-forward (PURGE_HORIZON=12, EMBARGO=1), 2015-2024, n=120 mo
 
 Diebold–Mariano overlay-vs-AA: **DM = 2.726, one-sided p = 0.003** (overlay beats AA well beyond the
 5% bar). **Decision: SHIP** the core overlay (`CORE.pinned` = output-PPI, GBP-EER; λ=0.5). The edge
-is modest (core is highly persistent, and the strongest core drivers — wages, PMIs, inflation
-expectations — are unavailable), but it is real, leakage-honest, and live-robust.
+is modest (core is highly persistent, and the strongest missing driver class — PMIs and inflation
+expectations — is LSEG-gated, not yet wired; free monthly wages are present but don't help), but it
+is real, leakage-honest, and live-robust.
 
 Live June-2026 core nowcast: **2.494** (AA 2.488 + overlay +0.006). Headline unchanged at 2.683.
+
+## Future work — pending LSEG Workspace access (branch `core` shelved 2026-07-24)
+
+Awaiting LSEG Workspace approval. The 2-factor overlay above is **complete and shipping**; the
+licensed drivers are a potential enhancement, not a blocker. When access lands:
+
+1. `pip install lseg-data` into the `quant` env.
+2. With Workspace running (the SDK attaches to the desktop app) or RDP machine-creds in `.env`, wire
+   fetches in `code/factors.py` for the PMI economic-indicator RICs (`uk_pmi_services` /
+   `uk_pmi_composite` / `uk_pmi_input_prices`) and the GBP 1y inflation-swap RIC (`uk_infl_swap_1y`).
+3. Re-run `code/new_factors/core_race.py` then `core_validate.py` to see whether PMI-input-prices,
+   services PMI, or the inflation swap earn a pin and lift the core overlay beyond rel-RMSE 0.952.
+   Update `CORE.pinned` in `code/targets.py`, this doc, and the validation gate accordingly.
+4. Optionally also add the free ONS PAYE **RTI median monthly pay** as a second wage test (cheap;
+   low expectations given AWE `uk_awg` already failed at rel-RMSE 1.040).

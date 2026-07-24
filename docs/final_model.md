@@ -119,8 +119,11 @@ alcohol & tobacco; ONS MM23 **DKO8**). The pipeline is parameterized by `targets
 - **Same architecture**, core-specific factors: `Core = AA + 0.5·(0.5·TVP + 0.5·LGBM)` (λ=0.5) on a
   **core-specific pinned set** — `uk_ppi_output` + `gbp_eer`. These are the only live-timely exogenous
   factors that beat AA-only in the core factor race. `uk_monthly_gdp` beat AA historically but its
-  dbnomics series is dead (ends 2024-03); `uk_cpih` beat AA but is excluded as near-circular; the
-  strongest core drivers (wages, PMIs, inflation swaps) have no free data source.
+  dbnomics series is dead (ends 2024-03); `uk_cpih` beat AA but is excluded as near-circular. The
+  strongest *missing* drivers — PMIs and the 1y inflation swap — are LSEG-Workspace-licensed and not
+  yet wired (branch `core` shelved 2026-07-24 pending access); free monthly wages (AWE, `uk_awg`) are
+  present but scored rel-RMSE 1.040 (don't beat AA). See `docs/core_factor_race.md` (availability +
+  future work).
 - **Validation gate (headline-grade):** purged+embargoed walk-forward 2015-2024 (n=120), core overlay
   **rel-RMSE 0.952** vs AA-only, **Diebold-Mariano p = 0.003** → the overlay **ships** (else core would
   print AA-only). Edge is modest — core is highly persistent, so the AA anchor already does most of it.

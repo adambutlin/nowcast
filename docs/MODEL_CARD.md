@@ -23,7 +23,9 @@ same architecture on a core-specific pinned set (`uk_ppi_output` + `gbp_eer`; λ
 is unchanged/byte-identical. Core overlay passed a headline-grade purged+embargoed gate (rel-RMSE
 **0.952**, DM p=0.003, 2015-2024); else it would print AA-only. Genesis June-2026: core 2.494 vs
 actual 2.6. Details: `docs/core_factor_race.md`, figures `plots/core/`. Tracked in
-`data/live_scorecard_core.csv`.
+`data/live_scorecard_core.csv`. **Pending enhancement** (branch `core` shelved 2026-07-24): the
+high-value PMI + inflation-swap drivers are LSEG-Workspace-licensed, not yet wired; free monthly
+wages (AWE) are present but don't beat AA.
 
 ## Performance (walk-forward 2015-2024, vs AutoARIMA)
 - rel-RMSE ≈ **0.89** full sample (λ=0.5); edge concentrated in 2022/23, ~neutral in calm.
