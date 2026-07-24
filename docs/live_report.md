@@ -48,16 +48,16 @@ First true prospective observation. Final production 2.91 vs actual 2.80 (err +0
 
 ## Core CPI nowcast (ex energy, food, alcohol & tobacco)
 
-Core model: **AA + 0.25·TVP + 0.25·LGBM** on output-PPI + GBP-EER (λ=0.5); validation rel-RMSE **0.952** (DM p=0.003, n=120). See docs/core_factor_race.md.
+Core model: **AA + 0.25·TVP + 0.25·LGBM** on 5 factors (services-PMI, output-PPI, 1y inflation-swap, corporate-profits, GBP-EER; λ=0.5); validation rel-RMSE **0.934** (DM p=0.006, n=120). See docs/core_factor_race.md.
 
 Releases scored: **1**
 
 | forecaster | n | RMSE | MAE |
 |---|---|---|---|
 | core_aa | 1 | 0.112 | 0.112 |
-| core_final | 1 | 0.106 | 0.106 |
+| core_final | 1 | 0.165 | 0.165 |
 | core_consensus | 1 | 0.100 | 0.100 |
 
 | month | core AA | **core final** | consensus | actual |
 |---|---|---|---|---|
-| 2026-06 | 2.49 | **2.49** | 2.50 | 2.60 |
+| 2026-06 | 2.49 | **2.44** | 2.50 | 2.60 |

@@ -19,13 +19,14 @@ decision-support** estimate reported alongside AutoARIMA. Not a standalone tradi
 
 ## Core CPI (dual output, added 2026-07-23)
 `model.py` also prints a **Core CPI YoY** nowcast (ex energy, food, alcohol & tobacco; ONS DKO8),
-same architecture on a core-specific pinned set (`uk_ppi_output` + `gbp_eer`; λ=0.5). Headline output
+same architecture on a **5-factor** core pinned set — services PMI, output PPI, 1y inflation swap,
+corporate profits (GOS YoY, the profit-led/"greedflation" channel), GBP-EER (λ=0.5). Headline output
 is unchanged/byte-identical. Core overlay passed a headline-grade purged+embargoed gate (rel-RMSE
-**0.952**, DM p=0.003, 2015-2024); else it would print AA-only. Genesis June-2026: core 2.494 vs
-actual 2.6. Details: `docs/core_factor_race.md`, figures `plots/core/`. Tracked in
-`data/live_scorecard_core.csv`. **Pending enhancement** (branch `core` shelved 2026-07-24): the
-high-value PMI + inflation-swap drivers are LSEG-Workspace-licensed, not yet wired; free monthly
-wages (AWE) are present but don't beat AA.
+**0.934**, DM p=0.006, 2015-2024); else it would print AA-only. Genesis June-2026: core 2.435 vs
+actual 2.6 (overlay overshot down this calm month). The PMIs, inflation swap, and corporate profits
+are sourced via **LSEG Workspace** (needs the desktop app + `LSEG_APP_KEY`); without it these factors
+degrade to unavailable. Details: `docs/core_factor_race.md`, figures `plots/core/`. Tracked in
+`data/live_scorecard_core.csv`.
 
 ## Performance (walk-forward 2015-2024, vs AutoARIMA)
 - rel-RMSE ≈ **0.89** full sample (λ=0.5); edge concentrated in 2022/23, ~neutral in calm.

@@ -30,8 +30,9 @@ def core_section():
     if len(cdone) == 0:
         return []
     L = ["", "---", "", "## Core CPI nowcast (ex energy, food, alcohol & tobacco)", "",
-         "Core model: **AA + 0.25·TVP + 0.25·LGBM** on output-PPI + GBP-EER (λ=0.5); "
-         "validation rel-RMSE **0.952** (DM p=0.003, n=120). See docs/core_factor_race.md.", "",
+         "Core model: **AA + 0.25·TVP + 0.25·LGBM** on 5 factors (services-PMI, output-PPI, "
+         "1y inflation-swap, corporate-profits, GBP-EER; λ=0.5); validation rel-RMSE **0.934** "
+         "(DM p=0.006, n=120). See docs/core_factor_race.md.", "",
          f"Releases scored: **{len(cdone)}**", "",
          "| forecaster | n | RMSE | MAE |", "|---|---|---|---|"]
     for f in ["core_aa", "core_final", "core_consensus"]:

@@ -37,13 +37,14 @@ CAPTIONS = {
         "SHAP importance of exogenous candidates for the core AA residual: output PPI dominates, but "
         "overall attribution is modest — core leaves little for factors to explain.",
     "core_factor_race_relrmse":
-        "Core factor race, walk-forward rel-RMSE vs AA-only (<1 = helps): only output-PPI and GBP-EER "
-        "(pinned) beat AA among live-timely exogenous factors; monthly-GDP beat AA historically but "
-        "its data is dead, and CPIH is excluded as circular.",
+        "Core factor race, walk-forward rel-RMSE vs AA-only (<1 = helps): the five pinned drivers "
+        "(services PMI, output-PPI, inflation swap, corporate profits, GBP-EER) each beat AA; "
+        "composite PMI is dropped as redundant with services, monthly-GDP's data is dead, CPIH is "
+        "circular.",
     "core_overlay_validation":
         "Core overlay validation (purged/embargoed walk-forward, 2015-2024, n=120): the shipped "
-        "AA+0.25*TVP+0.25*LGBM overlay cuts AA-only RMSE by ~5% (rel-RMSE 0.952, DM p=0.003), with "
-        "LGBM the workhorse.",
+        "5-factor AA+0.25*TVP+0.25*LGBM overlay cuts AA-only RMSE by ~7% (rel-RMSE 0.934, DM p=0.006), "
+        "with TVP the workhorse.",
 }
 
 
@@ -110,11 +111,11 @@ def fig_screen():
 
 def fig_race():
     r = _race().sort_values("univ_rel_rmse", ascending=False)
-    pinned = {"uk_ppi_output", "gbp_eer"}
-    colors, labels = [], []
+    pinned = {"uk_pmi_services", "uk_ppi_output", "uk_infl_swap_1y", "uk_corp_profits", "gbp_eer"}
+    colors = []
     for f in r.index:
         if f in pinned: colors.append(GREEN)
-        elif f == "uk_monthly_gdp": colors.append(VERM)      # beat AA but data dead
+        elif f in ("uk_monthly_gdp", "uk_pmi_composite"): colors.append(VERM)  # beat AA but dropped
         elif r.loc[f, "group"] == "cpi_family": colors.append(PURP)  # circular, excluded
         else: colors.append("#c9c9c9")
     fig, ax = plt.subplots(figsize=(8.5, 5)); _style(ax)
@@ -127,16 +128,16 @@ def fig_race():
     ax.set_xlabel("univariate rel-RMSE vs AA-only  (<1 = factor helps core)")
     ax.set_title("Core factor race", fontsize=12, loc="left")
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in (GREEN, VERM, PURP, "#c9c9c9")]
-    ax.legend(handles, ["pinned", "beats AA but data dead (monthly-GDP)",
+    ax.legend(handles, ["pinned", "beats AA but dropped (redundant / dead data)",
                         "excluded — circular (CPI-family)", "does not beat AA"],
               loc="upper right", frameon=True, framealpha=0.9, edgecolor="none", fontsize=8)
     save(fig, "core_factor_race_relrmse")
 
 
 def fig_validation():
-    # from code/new_factors/core_validate.py (2-factor overlay, purged+embargoed WF 2015-2024, n=120)
+    # from code/new_factors/core_validate.py (5-factor overlay, purged+embargoed WF 2015-2024, n=120)
     names = ["AA-only", "TVP member", "LGBM member", "AA + overlay\n(shipped)"]
-    rmse = [0.3213, 0.3154, 0.3015, 0.3059]
+    rmse = [0.3213, 0.3031, 0.3227, 0.3000]
     colors = [GREY, SKY, SKY, GREEN]
     fig, ax = plt.subplots(figsize=(7.2, 4.4)); _style(ax)
     bars = ax.bar(names, rmse, color=colors, width=0.6, zorder=3)
@@ -145,7 +146,7 @@ def fig_validation():
         ax.text(b.get_x() + b.get_width() / 2, v + 0.001, f"{v:.4f}", ha="center", fontsize=9, color=INK)
     ax.set_ylim(0.29, 0.327)
     ax.set_ylabel("walk-forward RMSE (pp)")
-    ax.set_title("Core overlay validation — beats AA-only (rel 0.952, DM p=0.003)", fontsize=11.5, loc="left")
+    ax.set_title("Core overlay validation — beats AA-only (rel 0.934, DM p=0.006)", fontsize=11.5, loc="left")
     save(fig, "core_overlay_validation")
 
 

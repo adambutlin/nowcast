@@ -25,7 +25,8 @@ _DOCS = os.path.join(_ROOT, "docs")
 
 EXOGENOUS = ["uk_ashe_pay", "uk_awg", "uk_paye", "uk_vacancies", "uk_monthly_gdp",
              "uk_pmi_services", "uk_pmi_composite", "uk_pmi_input_prices", "uk_infl_swap_1y",
-             "gbp_eer", "uk_ppi_output", "uk_rents", "uk_retail_sales", "uk_quarterly_gdp"]
+             "uk_corp_profits", "gbp_eer", "uk_ppi_output", "uk_rents", "uk_retail_sales",
+             "uk_quarterly_gdp"]
 CPI_FAMILY = ["uk_services_cpi", "uk_trimmed_mean_cpi", "uk_cpih", "uk_hciall"]  # near-components: circularity risk
 CANDIDATES = EXOGENOUS + CPI_FAMILY
 TRAIN_FROM = 1997
@@ -93,8 +94,8 @@ def main():
     print("\nfactors with rel_rmse<1:", list(beats.index))
     print("  exogenous among them  :", [f for f in beats.index if f in EXOGENOUS])
 
-    # write docs
-    with open(os.path.join(_DOCS, "core_factor_race.md"), "w") as fh:
+    # write auto-summary (NOT the curated docs/core_factor_race.md, which is hand-maintained)
+    with open(os.path.join(_DOCS, "core_factor_race_auto.md"), "w") as fh:
         fh.write("# Core CPI factor race + SHAP screen\n\n")
         fh.write(f"Target `uk_core_cpi`; AA residual {resid.dropna().index.min().date()}→"
                  f"{resid.dropna().index.max().date()}; window {FR.START}-{FR.END}. "

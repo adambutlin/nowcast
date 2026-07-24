@@ -83,6 +83,28 @@ def _dbnomics(provider, dataset, series):
     return s.resample("ME").last()
 
 
+_LSEG_SESSION = {}
+
+
+def _lseg_history(ric, field="VALUE"):
+    """LSEG Workspace (Data Library) history -> month-end series. Needs the Workspace desktop app
+    running + LSEG_APP_KEY in the environment; opens one desktop session and reuses it. Raises when
+    unavailable so the factor degrades to 'unavailable' (load_factor catches) rather than hanging."""
+    import lseg.data as ld
+    from lseg.data import session as _S
+    if not _LSEG_SESSION.get("open"):
+        key = os.environ.get("LSEG_APP_KEY")
+        if not key:
+            raise RuntimeError("LSEG_APP_KEY not set (LSEG factors need Workspace + app key)")
+        sess = _S.desktop.Definition(app_key=key).get_session()
+        _S.set_default(sess); sess.open()
+        _LSEG_SESSION["open"] = True
+    df = ld.get_history(universe=ric, fields=[field], count=100000)
+    s = df[field].astype(float)
+    s.index = pd.to_datetime(s.index)
+    return s.sort_index().resample("ME").last()
+
+
 def _mpc_vote_split():
     """
     Load data/mpc_vote_split.csv [date, hike_votes, hold_votes, cut_votes]
@@ -854,21 +876,23 @@ REGISTRY = {
 
     # ── Survey/PMI factors: pub_lag=0 (flash PMI released before CPI) ───────
     "uk_pmi_composite": dict(
-        fetch=None, transform="level",
+        fetch=lambda: _lseg_history("aGBPMIOUTCE/A"), transform="level",
         pub_lag=0, candidate=True, csv="uk_pmi_composite.csv",
-        note="S&P Global UK Composite PMI. pub_lag=0: flash released last week of "
-             "reference month, final first week of T+1 — before CPI. "
-             "Licensed (S&P Global / Markit). Drop data/uk_pmi_composite.csv."),
+        note="S&P Global UK Composite PMI (Output). pub_lag=0: flash last week of reference "
+             "month, before CPI. Via LSEG Workspace (RIC aGBPMIOUTCE/A — long history from 1998; "
+             "the GBCPMI=ECI poll RIC is only 3y). Needs Workspace app + LSEG_APP_KEY; "
+             "CSV fallback data/uk_pmi_composite.csv."),
     "uk_pmi_manufacturing": dict(
         fetch=None, transform="level",
         pub_lag=0, candidate=True, csv="uk_pmi_manufacturing.csv",
         note="S&P Global UK Manufacturing PMI. pub_lag=0. Licensed. "
              "Drop data/uk_pmi_manufacturing.csv [date, value=index]."),
     "uk_pmi_services": dict(
-        fetch=None, transform="level",
+        fetch=lambda: _lseg_history("aGBBUSA/A"), transform="level",
         pub_lag=0, candidate=True, csv="uk_pmi_services.csv",
-        note="S&P Global UK Services PMI. pub_lag=0. Licensed. "
-             "Drop data/uk_pmi_services.csv [date, value=index]."),
+        note="S&P Global UK Services PMI (Business Activity). pub_lag=0. Via LSEG Workspace "
+             "(RIC aGBBUSA/A — long history from 2010; the GBPMIS=ECI poll RIC is only 3y). "
+             "Needs Workspace app + LSEG_APP_KEY; CSV fallback uk_pmi_services.csv."),
     "uk_pmi_input_prices": dict(
         fetch=None, transform="level",
         pub_lag=0, candidate=True, csv="uk_pmi_input_prices.csv",
@@ -914,9 +938,18 @@ REGISTRY = {
 
     # ── Legacy gated factors (existing) ──────────────────────────────────────
     "uk_infl_swap_1y": dict(
-        fetch=None, transform="level", pub_lag=0, candidate=True,
-        csv="uk_infl_swap_1y.csv",
-        note="UK 1Y RPI/CPI inflation swap. Bloomberg/Refinitiv. pub_lag=0. Drop CSV."),
+        fetch=lambda: _lseg_history("GBRPIZ1Y=", field="MID_PRICE"),
+        transform="level", pub_lag=0, candidate=True, csv="uk_infl_swap_1y.csv",
+        note="UK 1Y RPI inflation-linked swap (inflation expectations). pub_lag=0, daily -> ME. "
+             "Via LSEG Workspace (RIC GBRPIZ1Y=, field MID_PRICE, needs Workspace + LSEG_APP_KEY); "
+             "CSV fallback uk_infl_swap_1y.csv."),
+    "uk_corp_profits": dict(
+        fetch=lambda: _lseg_history("aGBIAGDPGOS/A"),
+        transform="yoy", pub_lag=2, candidate=True, csv="uk_corp_profits.csv",
+        note="UK corporate gross operating surplus (ONS, quarterly, £), YoY = nominal corporate "
+             "profit growth — the profit-led / 'greedflation' channel (margin/pricing-power pressure "
+             "core cost-push factors miss). Via LSEG Workspace (RIC aGBIAGDPGOS/A); pub_lag=2 "
+             "(quarterly, ~1Q behind). CSV fallback uk_corp_profits.csv."),
     "uk_pmi_old": dict(
         fetch=None, transform="level", pub_lag=0, candidate=True,
         csv="uk_pmi_composite.csv",  # same CSV as uk_pmi_composite

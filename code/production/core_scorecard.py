@@ -24,7 +24,7 @@ COLS = ["release_month", "forecast_date"] + FORECASTERS + ["actual"] + [f"{f}_er
 # core_consensus = representative of the quoted bank core forecasts (Goldman 2.5 / Barclays 2.45 /
 # Nomura 2.3 — all undershot); actual core (ONS DKO8) = 2.6.
 GENESIS = dict(release_month="2026-06", forecast_date="2026-06-30",
-               core_aa=2.488, core_final=2.494, core_consensus=2.5, actual=2.6)
+               core_aa=2.488, core_final=2.435, core_consensus=2.5, actual=2.6)
 
 
 def load():

@@ -117,18 +117,19 @@ alcohol & tobacco; ONS MM23 **DKO8**). The pipeline is parameterized by `targets
 (`HEADLINE` / `CORE`); the headline path is byte-identical (regression-locked: June-2026 = 2.683).
 
 - **Same architecture**, core-specific factors: `Core = AA + 0.5·(0.5·TVP + 0.5·LGBM)` (λ=0.5) on a
-  **core-specific pinned set** — `uk_ppi_output` + `gbp_eer`. These are the only live-timely exogenous
-  factors that beat AA-only in the core factor race. `uk_monthly_gdp` beat AA historically but its
-  dbnomics series is dead (ends 2024-03); `uk_cpih` beat AA but is excluded as near-circular. The
-  strongest *missing* drivers — PMIs and the 1y inflation swap — are LSEG-Workspace-licensed and not
-  yet wired (branch `core` shelved 2026-07-24 pending access); free monthly wages (AWE, `uk_awg`) are
-  present but scored rel-RMSE 1.040 (don't beat AA). See `docs/core_factor_race.md` (availability +
-  future work).
+  **5-factor core pinned set**, one per channel — `uk_pmi_services` (demand), `uk_ppi_output`
+  (cost-push), `uk_infl_swap_1y` (expectations), `uk_corp_profits` (profit-led / "greedflation"),
+  `gbp_eer` (FX). All beat AA-only alone and are non-redundant. Dropped though they beat AA:
+  `uk_pmi_composite` (redundant with services PMI), `uk_monthly_gdp` (dbnomics series dead, ends
+  2024-03), `uk_cpih` (near-circular). The PMIs, inflation swap, and corporate-profits (ONS GOS YoY)
+  are sourced via **LSEG Workspace** (`factors._lseg_history`, needs Workspace + `LSEG_APP_KEY`);
+  free monthly wages (AWE) were tested but don't help (rel-RMSE 1.040).
 - **Validation gate (headline-grade):** purged+embargoed walk-forward 2015-2024 (n=120), core overlay
-  **rel-RMSE 0.952** vs AA-only, **Diebold-Mariano p = 0.003** → the overlay **ships** (else core would
+  **rel-RMSE 0.934** vs AA-only, **Diebold-Mariano p = 0.006** → the overlay **ships** (else core would
   print AA-only). Edge is modest — core is highly persistent, so the AA anchor already does most of it.
-- **First observation (June-2026):** core nowcast **2.494** vs actual **2.6** (err −0.106), ≈ consensus;
-  the overlay was near-flat this calm month. Tracked in `data/live_scorecard_core.csv`.
+- **First observation (June-2026):** core nowcast **2.435** vs actual **2.6** (err −0.165); the overlay
+  pulled down on soft mid-2026 PMIs and overshot this one calm month (AA 2.488 was closer) — the
+  expected noisy-but-net-positive behaviour. Tracked in `data/live_scorecard_core.csv`.
 - **Evidence:** `docs/core_factor_race.md` (race + calibration + gate); figures `plots/core/*.png`;
   research code `code/new_factors/core_race.py`, `core_validate.py`; config `code/targets.py`.
 

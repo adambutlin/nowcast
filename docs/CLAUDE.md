@@ -33,5 +33,10 @@ Extra notes:
   calls for any run that fetches (background-launched runs get re-sandboxed and hang).
 - A benign statsmodels `ConvergenceWarning` and one expected-drop factor
   (`global_supply_chain_pressure`, xlsx engine error → 8/9 live) are normal, not a degradation.
+- **LSEG factors (Core model):** `uk_pmi_services`, `uk_pmi_composite`, `uk_infl_swap_1y`,
+  `uk_corp_profits` fetch via LSEG Workspace (`factors._lseg_history`, `lseg-data` installed in
+  quant). They need the **Workspace desktop app running** + `LSEG_APP_KEY` in `.env` (gitignored),
+  and the desktop proxy is `localhost:9000` — so those runs also need `dangerouslyDisableSandbox:
+  true`. Without Workspace they degrade to unavailable (core overlay trains on the reduced set).
 
 See [README.md](README.md#run) for the full run/scoring commands.
