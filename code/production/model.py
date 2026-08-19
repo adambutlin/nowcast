@@ -1,8 +1,12 @@
 """
 FROZEN PRODUCTION MODEL — UK CPI YoY nowcast.  (2026-06-19)
 
-    Forecast = AA + lambda * Overlay,   Overlay = 0.5*TVP + 0.5*LGBM,   lambda = 0.5
-    => Forecast = AutoARIMA + 0.25*TVP_resid + 0.25*LGBM_resid
+    Forecast = AA + lambda * Overlay + AdminStep,   Overlay = 0.5*TVP + 0.5*LGBM,  lambda = 0.5
+    => Forecast = AutoARIMA + 0.25*TVP_resid + 0.25*LGBM_resid + AdminStep
+
+AdminStep (added 2026-08-19, headline only) is the announced Ofgem price-cap reset priced
+into CPI arithmetically — see production/admin_prices.py. It is zero in the ~3 months out
+of 4 with no reset, and core CPI is ex-energy so it never applies there.
 
 GOVERNANCE: this is the single canonical production forecaster. The research phase is over;
 do not modify weights/members/lambda here without a governance decision (see docs/final_model.md).
@@ -32,6 +36,8 @@ sys.path.insert(0, _CODE); sys.path.insert(0, os.path.join(_CODE, "new_factors")
 import numpy as np, pandas as pd
 import lightgbm as lgb
 import uk_model_zoo as Z, two_stage as TS
+import factors as F
+from production import admin_prices as AP
 import validation as V
 from targets import HEADLINE, CORE, Target
 
@@ -50,8 +56,9 @@ def _spec(t: Target) -> str:
     if not t.pinned:
         return f"{t.name} = AutoARIMA (AA-only)"
     w = t.overlay_weights
-    return (f"AA + {t.lam}*({w['tvp']}*TVP + {w['lgbm']}*LGBM) "
-            f"= AA + {t.lam*w['tvp']:g}*TVP + {t.lam*w['lgbm']:g}*LGBM")
+    admin = " + AdminStep" if t.admin_layer else ""
+    return (f"AA + {t.lam}*({w['tvp']}*TVP + {w['lgbm']}*LGBM){admin} "
+            f"= AA + {t.lam*w['tvp']:g}*TVP + {t.lam*w['lgbm']:g}*LGBM{admin}")
 
 
 def _residual_history(df, target: Target = HEADLINE):
@@ -60,31 +67,35 @@ def _residual_history(df, target: Target = HEADLINE):
 
 
 def _tvp_resid(df, live, resid, nd):
-    """TVP overlay on the PURGED + EMBARGOED residual history, predicting month nd.
+    """TVP overlay on the residual history, predicting month nd.
 
-    The residual column handed to the Kalman filter is embargoed, so its last
-    non-NaN month is TS.PURGE_HORIZON + TS.EMBARGO months before nd. Left to
-    infer its own target month from that column, BaseModel._nowcast_row would
-    point the TVP at the first embargoed month and feed it THAT month's factor
-    row — a 13-month-stale forecast presented as the current-month overlay
-    (fixed 2026-08-19; see docs/postmortem_2026_07.md §3). Pin the month
-    explicitly, exactly as _lgbm_resid pins its prediction row."""
+    Left to infer its own target month, BaseModel._nowcast_row takes the first
+    month after the last non-NaN residual. That is correct for an unembargoed
+    residual column and WRONG for an embargoed one (it would point the TVP at
+    the first embargoed month and feed it THAT month's factor row — a 13-month
+    stale forecast presented as the current-month overlay; fixed 2026-08-19, see
+    docs/postmortem_2026_07.md §3). Pin the month explicitly either way, exactly
+    as _lgbm_resid pins its prediction row."""
     d = df.copy()
     d["resid"] = resid
     pred, _ = Z.TVP().nowcast(d, live, "resid", nowcast_date=nd)
     return float(pred)
 
 
-def _lgbm_resid(df, live, resid, nd):
-    """LGBM overlay on PURGED + EMBARGOED residual history, predicting month nd.
+def _lgbm_resid(df, live, resid, nd, purge_horizon=0, embargo=0):
+    """LGBM overlay on the residual history, predicting month nd.
 
-    The residual target (cpi_yoy, a 12-month difference) is autocorrelated:
-    residuals within TS.PURGE_HORIZON months of nd share its YoY window. Purge that
-    label horizon + a TS.EMBARGO-month gap so the most-recent overlapping residuals
-    cannot leak regime-shift information into the overlay via autocorrelation.
+    `purge_horizon`/`embargo` drop training rows within that many months of nd.
+    They default to OFF: in a live nowcast every residual up to the last released
+    CPI month is genuinely observable, so purging them discards real information
+    (governance decision 2026-08-19; two_stage.py has always documented the purge
+    as backtest-only). A WALK-FORWARD BACKTEST must pass TS.PURGE_HORIZON /
+    TS.EMBARGO, because there the residual target (cpi_yoy, a 12-month difference)
+    is autocorrelated: training rows within 12 months of a test month share its
+    YoY window and leak regime-shift information into the overlay.
     See validation.purge_embargo / docs/superpowers/specs."""
     data = pd.DataFrame(df[live]).join(resid.rename("resid")).dropna(subset=["resid"])
-    train = V.purge_embargo(data, pd.Timestamp(nd), TS.PURGE_HORIZON, TS.EMBARGO)
+    train = V.purge_embargo(data, pd.Timestamp(nd), purge_horizon, embargo)
     return float(lgb.LGBMRegressor(**LGB).fit(train[live], train["resid"])
                  .predict(df.loc[[nd], live])[0])
 
@@ -109,32 +120,57 @@ def nowcast(df=None, live=None, target: Target = HEADLINE):
               f"Missing: {missing_required}", file=sys.stderr, flush=True)
     aa_pred, nd = Z.AutoARIMA().nowcast(df, [], target.name)
 
+    # Freshness guard. The overlays paper over a dead source — LightGBM routes NaN
+    # silently, the TVP forward-fills within its budget — so staleness has to be
+    # surfaced here; this is what hid a missing uk_ppi_input and a zeroed Ofgem cap
+    # step in July-2026 (docs/postmortem_2026_07.md §3). Two tiers:
+    #   event/regulatory series must cover nd exactly — "no cap reset this month" is a
+    #     recorded 0, never an absence, so a gap is a stale source, not a quiet month;
+    #   everything else gets factors.factor_health's pub_lag + grace budget, which is
+    #     what keeps a quarterly series (uk_quarterly_gdp) from flagging mid-quarter.
+    stale = [f for f in target.reg
+             if f in (live or []) and f in df.columns and pd.isna(df.loc[nd, f])]
+    paced = [f for f in (live or []) if f not in target.reg and f in df.columns]
+    if paced:
+        health = F.factor_health(df, paced, asof=nd)
+        stale += [f for f, r in health.iterrows() if r["status"] != "LIVE"]
+    if stale:
+        print(f"[production.nowcast:{target.name}] ⚠ STALE: no observation at "
+              f"{pd.Timestamp(nd).date()} for {stale} — their source ends earlier; the "
+              f"overlay is guessing for these factors.", file=sys.stderr, flush=True)
+
     base = dict(nowcast_date=str(pd.Timestamp(nd).date()), label=target.label,
                 target=target.name, spec=_spec(target), lam=target.lam,
                 aa=round(float(aa_pred), 3), n_pinned=len(target.pinned), pinned_n=len(target.pinned),
                 n_live=len(live or []), live_factors=list(live or []),
                 missing_factors=missing, missing_required=missing_required,
-                degraded=bool(missing_required))
+                degraded=bool(missing_required),
+                stale_factors=stale, stale=bool(stale))
 
     if not target.pinned:                       # AA-only (e.g. core before an overlay is shipped)
         base.update(forecast=round(float(aa_pred), 3), tvp_resid=0.0, lgbm_resid=0.0, overlay=0.0,
                     tvp_contribution=0.0, lgbm_contribution=0.0)
         return base
 
-    resid_full = _residual_history(df, target).reindex(df.index)
-    # Overlays train on residual history extended to the latest actual, but EMBARGOED:
-    # blank the trailing PURGE_HORIZON+EMBARGO months before nd so neither overlay trains
-    # into the YoY-autocorrelated window. See validation.embargo_series.
-    resid = V.embargo_series(resid_full, nd, TS.PURGE_HORIZON, TS.EMBARGO)
+    # Live path: overlays train on the FULL residual history, up to the last released
+    # CPI month. The purge/embargo window is a backtest device (it stops a test month's
+    # YoY window leaking into training); applied here it would only discard residuals a
+    # real-time analyst can legitimately see. Governance decision 2026-08-19 — see
+    # docs/final_model.md §11. two_stage.backtest still purges.
+    resid = _residual_history(df, target).reindex(df.index)
     tvp_resid = _tvp_resid(df, live, resid, nd)
     lgbm_resid = _lgbm_resid(df, live, resid, nd)
     ow = target.overlay_weights
     overlay = ow["tvp"] * float(tvp_resid) + ow["lgbm"] * lgbm_resid
-    forecast = float(aa_pred) + target.lam * overlay
+    # Administered-price layer: a cap reset is announced arithmetic, not something
+    # the overlay can learn from 23 nonzero months. Zero in non-reset months.
+    step, step_detail = (AP.admin_step(nd) if target.admin_layer else (0.0, dict(reason="off")))
+    forecast = float(aa_pred) + target.lam * overlay + step
     base.update(tvp_resid=round(float(tvp_resid), 3), lgbm_resid=round(lgbm_resid, 3),
                 overlay=round(overlay, 3),
                 tvp_contribution=round(target.lam * ow["tvp"] * float(tvp_resid), 3),
                 lgbm_contribution=round(target.lam * ow["lgbm"] * lgbm_resid, 3),
+                admin_step=round(float(step), 3), admin_detail=step_detail,
                 forecast=round(forecast, 3))
     return base
 
@@ -147,6 +183,10 @@ def _print_block(nc):
     if nc["n_pinned"]:
         print(f"    + TVP     : {nc['tvp_contribution']:+.3f}  (resid {nc['tvp_resid']})")
         print(f"    + LGBM    : {nc['lgbm_contribution']:+.3f}  (resid {nc['lgbm_resid']})")
+        if nc.get("admin_step"):
+            d = nc["admin_detail"]
+            print(f"    + Admin   : {nc['admin_step']:+.3f}  (Ofgem cap {d['cap_pct']:+.2f}%, "
+                  f"beta {d['beta']}, kappa {d['kappa']})")
         print(f"    FORECAST  : {nc['forecast']}")
         cov = f"{nc['n_live']}/{nc['n_pinned']} PINNED factors live"
         if nc["degraded"]:
@@ -155,17 +195,78 @@ def _print_block(nc):
             print(f"    factors   : {cov} (expected-drop: {nc['missing_factors']})")
         else:
             print(f"    factors   : {cov}")
+        if nc.get("stale_factors"):
+            print(f"    ⚠ STALE   : no {nc['nowcast_date']} observation for "
+                  f"{nc['stale_factors']}")
     else:
         print(f"    FORECAST  : {nc['forecast']}   [AA-only — no overlay shipped for this target]")
 
 
+_RUNS_DIR = os.path.join(os.path.dirname(_CODE), "data", "production", "runs")
+
+
+def _git_sha():
+    try:
+        import subprocess
+        return subprocess.run(["git", "-C", _CODE, "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=10).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def write_manifest(blocks, path=None):
+    """Persist everything a post-mortem needs about one run.
+
+    Reconstructing what a past nowcast actually saw is otherwise impossible: the
+    factor matrix is fetched live and is revised and extended continuously, so a
+    replay months later reads different inputs (docs/postmortem_2026_07.md).
+    One JSON per target-month: the nowcast dict, the factor row the overlays were
+    given, each factor's source status and last observation, and the code version.
+    """
+    import json
+    os.makedirs(_RUNS_DIR, exist_ok=True)
+    written = []
+    for b in blocks:
+        nc, df, status = b["nowcast"], b["matrix"], b["status"]
+        nd = pd.Timestamp(nc["nowcast_date"])
+        cols = [c for c in df.columns if c != nc["target"]]
+        row = df.loc[nd, cols] if nd in df.index else pd.Series(dtype=float)
+        payload = dict(
+            run_utc=pd.Timestamp.utcnow().isoformat(),
+            git_sha=_git_sha(),
+            nowcast=nc,
+            lgb_params=LGB,
+            factor_row={c: (None if pd.isna(v) else float(v)) for c, v in row.items()},
+            factor_status={c: status.get(c) for c in cols},
+            factor_last_obs={c: (str(df[c].dropna().index[-1].date())
+                                 if df[c].notna().any() else None) for c in cols},
+        )
+        out = path or os.path.join(_RUNS_DIR, f"{nc['target']}_{nd:%Y-%m}.json")
+        with open(out, "w") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+        written.append(out)
+    return written
+
+
 def main():
     print("=== PRODUCTION NOWCAST (headline + core) ===")
+    try:                       # keep the Ofgem cap series current before anything reads it
+        added = AP.refresh_cap_csv()
+        if added:
+            print(f"  [ofgem] cap series extended: {added}")
+    except Exception as e:
+        print(f"  [ofgem] cap refresh failed ({type(e).__name__}: {e}) — using the CSV as-is")
+    blocks = []
     for tgt in (HEADLINE, CORE):
         try:
-            _print_block(nowcast(target=tgt))
+            df, live, status = TS.load_matrix(target=tgt)
+            nc = nowcast(df, live, tgt)
+            _print_block(nc)
+            blocks.append(dict(nowcast=nc, matrix=df, status=status))
         except Exception as e:
             print(f"\n  {tgt.label}: FAILED — {type(e).__name__}: {e}")
+    for out in write_manifest(blocks):
+        print(f"\n  manifest  : {os.path.relpath(out, os.path.dirname(_CODE))}")
 
 
 if __name__ == "__main__":

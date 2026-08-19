@@ -20,6 +20,7 @@ class Target:
     start: int                      # walk-forward scoring first year
     end: Optional[int]              # None -> residuals run to the latest actual
     reg: Tuple[str, ...] = ("mpc_rate_change", "ofgem_cap_delta")  # fill-0 regulatory factors
+    admin_layer: bool = False       # add the Ofgem cap step (production/admin_prices.py)
 
 
 HEADLINE = Target(
@@ -28,7 +29,11 @@ HEADLINE = Target(
             "global_supply_chain_pressure", "mpc_rate_change", "ofgem_cap_delta",
             "uk_ppi_input", "deep_sea_freight"),
     overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
-    aa_start=2001, start=2015, end=None)
+    aa_start=2001, start=2015, end=None,
+    # Regulated household energy is ~3% of the headline basket and lands as a
+    # quarterly step no learner can price from 23 nonzero months. Added as
+    # arithmetic instead (docs/final_model.md §11).
+    admin_layer=True)
 
 # CORE pinned set from the factor race (docs/core_factor_race.md, 2026-07-24 with LSEG factors):
 # exogenous candidates that beat AA-only on a walk-forward (univ_rel_rmse<1), are live-timely, and
@@ -42,4 +47,5 @@ CORE = Target(
     name="uk_core_cpi", label="Core CPI YoY (ex energy, food, alcohol & tobacco)",
     pinned=("uk_pmi_services", "uk_ppi_output", "uk_infl_swap_1y", "uk_corp_profits", "gbp_eer"),
     overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
-    aa_start=2001, start=2015, end=None)
+    aa_start=2001, start=2015, end=None,
+    admin_layer=False)     # core is ex-energy by construction — the cap cannot touch it

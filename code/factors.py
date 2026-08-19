@@ -463,12 +463,62 @@ def _nominal_uk_hp():
 # candidate=False → core factor, always kept.
 # pub_lag         → publication delay in months (0=contemporaneous, 1=one month lag).
 
+
+DESNZ_FUEL_PAGE = "https://www.gov.uk/government/statistics/weekly-road-fuel-prices"
+
+
+def _desnz_pump_price():
+    """UK pump prices (pence/litre), month-end, from DESNZ weekly road fuel prices.
+
+    The mean of ULSP (petrol) and ULSD (diesel) — the two track each other closely
+    and CPI 07.2.2 covers both. This is the ACTUAL price CPI collects, whereas
+    `oil_brent` is crude: pump prices follow crude with a 2-6 week lag and are
+    damped by duty (a fixed pence/litre) plus VAT. July-2026 is the case in point —
+    Brent +32% on the month while CPI motor fuels fell 3.2%.
+
+    DESNZ republishes the CSVs under rotating asset URLs, so the links are scraped
+    from the statistics page rather than hard-coded. Two files cover 2003-2017 and
+    2018-present; both are concatenated.
+    """
+    import io, re
+    html = requests.get(DESNZ_FUEL_PAGE, headers={"User-Agent": "Mozilla/5.0"}, timeout=30).text
+    urls = re.findall(r'https://[^"\']+\.csv', html)
+    if not urls:
+        raise RuntimeError("no CSV links found on the DESNZ weekly road fuel prices page")
+    frames = []
+    for u in dict.fromkeys(urls):
+        r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
+        r.raise_for_status()
+        d = pd.read_csv(io.StringIO(r.text))
+        d.columns = [c.strip().lstrip("\ufeff") for c in d.columns]
+        date_col = d.columns[0]
+        pump = [c for c in d.columns if "Pump price" in c]
+        if len(pump) < 2:
+            continue
+        d[date_col] = pd.to_datetime(d[date_col], dayfirst=True, errors="coerce")
+        d = d.dropna(subset=[date_col]).set_index(date_col)
+        frames.append(d[pump].apply(pd.to_numeric, errors="coerce").mean(axis=1))
+    if not frames:
+        raise RuntimeError("DESNZ fuel CSVs had no recognisable pump-price columns")
+    s = pd.concat(frames).sort_index()
+    s = s[~s.index.duplicated(keep="last")]
+    # MONTHLY MEAN, not month-end. ONS collects motor-fuel prices around the middle
+    # of the month, so the month's average weekly price is what CPI actually sees:
+    # corr with CPI 07.2.2 MoM% is 0.993 for the mean vs 0.831 for the month-end
+    # close (n=271, 2004+). July-2026: mean -3.67% against a realised -3.16%, while
+    # the month-end close said +3.69%.
+    return s.resample("ME").mean().dropna()
+
+
 REGISTRY = {
     # ── target ──────────────────────────────────────────────────────────────
     "cpi_yoy": dict(
         fetch=lambda: _dbnomics("ONS", "MM23", "D7G7.M"),
         transform="level", pub_lag=1, candidate=False, csv="cpi_yoy.csv",
-        note="ONS CPI All Items YoY (D7G7) via dbnomics. TARGET."),
+        csv_frozen=True,
+        note="ONS CPI All Items YoY (D7G7) via dbnomics. TARGET. csv_frozen: the CSV is "
+             "deliberately truncated to the last RELEASED month and that truncation is what "
+             "pins the nowcast month, so it is never spliced forward from the live fetch."),
     "cpi_yoy_long": dict(
         fetch=_cpi_yoy_long,
         transform="level", pub_lag=1, candidate=False, csv="cpi_yoy_long.csv",
@@ -611,6 +661,19 @@ REGISTRY = {
              "silicon metal, neodymium (NdFeB magnets), dysprosium. "
              "pub_lag=0 for futures/spot; pub_lag=1 for USGS. "
              "Drop data/battery_metals_proxy.csv [date, value=index or price_level]."),
+
+    "uk_pump_price": dict(
+        fetch=_desnz_pump_price, transform="logret", pub_lag=0, candidate=True,
+        csv="uk_pump_price.csv",
+        note="UK road-fuel pump price, mean of ULSP petrol and ULSD diesel (DESNZ weekly "
+             "road fuel prices, 2003+), MONTHLY MEAN of the weekly series, pence/litre "
+             "(the mean tracks CPI 07.2.2 MoM at corr 0.993 vs 0.831 for a month-end "
+             "close, n=271). pub_lag=0: collected each "
+             "Monday, published ~2 working days later, so the month-end value is known "
+             "before the CPI release. The DIRECT motor-fuel CPI input — oil_brent is crude, "
+             "which leads pump prices by 2-6 weeks and is damped by duty + VAT (July-2026: "
+             "Brent +32% MoM, CPI motor fuels -3.2%). Candidate: pinning it, or replacing "
+             "oil_brent with it, needs the factor race + validation gate."),
 
     # ── Global shipping / supply chain ────────────────────────────────────────
     "deep_sea_freight": dict(
@@ -856,6 +919,7 @@ REGISTRY = {
     "uk_core_cpi": dict(
         fetch=lambda: _dbnomics("ONS", "MM23", "DKO8.M"),
         transform="level", pub_lag=1, candidate=True, csv="uk_core_cpi.csv",
+        csv_frozen=True,
         note="ONS CPI 12mth excl energy, food, alcohol & tobacco (MM23 DKO8) via dbnomics — "
              "core CPI YoY, history from 1989. CSV drop-in fallback data/uk_core_cpi.csv "
              "[date, value=YoY%]; like cpi_yoy.csv, the CSV is truncated to the last RELEASED "
@@ -1138,26 +1202,59 @@ def screen_candidates(df, target, threshold=0.001, always_keep=None):
 # LOADER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_csv(path, transform):
+def _read_csv_raw(path):
+    """CSV drop-in -> month-end Series of RAW (untransformed) values."""
     df = pd.read_csv(path)
     cols = {c.lower(): c for c in df.columns}
     dcol = cols.get("date", df.columns[0])
     vcol = cols.get("value", df.columns[-1])
     df[dcol] = pd.to_datetime(df[dcol])
-    s = df.set_index(dcol)[vcol].sort_index().resample("ME").last()
-    return _apply_transform(s, transform)
+    return df.set_index(dcol)[vcol].sort_index().resample("ME").last()
+
+
+def _load_csv(path, transform):
+    return _apply_transform(_read_csv_raw(path), transform)
 
 
 def load_factor(name):
-    """Return (series, status). CSV drop-in takes priority over live fetch."""
+    """Return (series, status). The CSV drop-in is authoritative for the span it
+    covers; months AFTER its last observation are spliced in from the live fetch.
+
+    A drop-in that has silently gone stale used to shadow a fresher live source
+    outright — that is how the July-2026 nowcast lost `uk_ppi_input`, the LGBM
+    overlay's top feature (docs/postmortem_2026_07.md §3, cause 5). Splicing
+    happens on RAW values, before the transform, so 12-month transforms (yoy)
+    span the join correctly.
+
+    Set `csv_frozen: True` on a registry entry to opt out — the target series
+    are deliberately truncated to the last RELEASED month, which is what pins
+    the nowcast month, so they must not be extended.
+    """
     entry = REGISTRY[name]
     csv_path = os.path.join(DATA_DIR, entry["csv"]) if entry.get("csv") else None
+    csv_raw = None
 
     if csv_path and os.path.exists(csv_path):
         try:
-            return _load_csv(csv_path, entry["transform"]).rename(name), "csv"
+            csv_raw = _read_csv_raw(csv_path)
         except Exception as e:
             print(f"  [{name}] CSV load failed: {e}")
+
+    if csv_raw is not None and len(csv_raw):
+        if entry.get("csv_frozen") or entry["fetch"] is None:
+            return _apply_transform(csv_raw, entry["transform"]).rename(name), "csv"
+        try:
+            live_raw = entry["fetch"]()
+            fresher = live_raw[live_raw.index > csv_raw.index[-1]].dropna()
+            if len(fresher):
+                print(f"  [{name}] CSV ends {csv_raw.index[-1].date()} — splicing "
+                      f"{len(fresher)} fresher month(s) from the live fetch "
+                      f"(through {fresher.index[-1].date()})")
+                spliced = pd.concat([csv_raw, fresher]).sort_index()
+                return _apply_transform(spliced, entry["transform"]).rename(name), "csv+live"
+        except Exception as e:
+            print(f"  [{name}] live freshness check failed ({e}) — using CSV alone")
+        return _apply_transform(csv_raw, entry["transform"]).rename(name), "csv"
 
     if entry["fetch"] is not None:
         try:
@@ -1202,7 +1299,8 @@ if __name__ == "__main__":
     print("\nFactor availability:")
     for n, st in status.items():
         role = "TARGET" if n == "cpi_yoy" else ("core" if n in core_factors() else "candidate")
-        flag = {"live": "✓ live", "csv": "✓ csv", "unavailable": "✗ ----"}[st]
+        flag = {"live": "✓ live", "csv": "✓ csv", "csv+live": "✓ splc",
+                "unavailable": "✗ ----"}[st]
         lag_str = f"pub_lag={REGISTRY[n].get('pub_lag','?')}"
         print(f"  {flag:<8} {role:<9} {lag_str:<10} {n:<25} {REGISTRY[n]['note'][:55]}")
     if len(df):

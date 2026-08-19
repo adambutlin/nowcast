@@ -1,11 +1,15 @@
 """
-Production LGBM overlay — purged + embargoed training.
+Production overlays — training window and prediction month.
 
-The frozen production model fits its LGBM overlay on the AutoARIMA-residual
-history, then predicts the first unreleased month `nd`. Because the residual
-target (cpi_yoy) is a 12-month difference, residuals within 12 months of `nd`
-share its YoY window. production.model._lgbm_resid purges that label-horizon
-(+1m embargo) so those autocorrelated residuals do not drive the overlay.
+The production model fits its overlays on the AutoARIMA-residual history, then
+predicts the first unreleased month `nd`.
+
+Purge/embargo is a BACKTEST device: because the residual target (cpi_yoy) is a
+12-month difference, training rows within 12 months of a *test* month share its
+YoY window. `_lgbm_resid` therefore takes purge_horizon/embargo arguments, which
+a walk-forward passes and the live path leaves off — every residual up to the
+last released CPI month is genuinely observable in real time (governance
+decision 2026-08-19, docs/final_model.md §11).
 
 Spec: docs/superpowers/specs/2026-06-22-purged-embargo-backtest-design.md
 """
@@ -44,35 +48,60 @@ def _month(idx, nd, k):
     return hits[0]
 
 
+def _purged(df, live, resid, nd):
+    """_lgbm_resid with the backtest purge/embargo switched on."""
+    return PM._lgbm_resid(df, live, resid, nd, TS.PURGE_HORIZON, TS.EMBARGO)
+
+
 class TestProductionLGBMPurge:
+    """purge_horizon/embargo, when passed, must drop exactly the overlapping window."""
+
     def test_poisoning_purged_residual_does_not_change_overlay(self):
         df, live, resid, nd = _frame()
-        base = PM._lgbm_resid(df, live, resid, nd)
+        base = _purged(df, live, resid, nd)
         poisoned = resid.copy()
         poisoned.loc[_month(resid.index, nd, 6)] += 1000.0   # inside the 12+1 window
-        after = PM._lgbm_resid(df, live, poisoned, nd)
+        after = _purged(df, live, poisoned, nd)
         assert np.isclose(base, after, atol=1e-9)
 
     def test_poisoning_unpurged_residual_does_change_overlay(self):
         """Sanity: a residual well outside the purge window still influences the fit."""
         df, live, resid, nd = _frame()
-        base = PM._lgbm_resid(df, live, resid, nd)
+        base = _purged(df, live, resid, nd)
         poisoned = resid.copy()
         poisoned.loc[_month(resid.index, nd, 30)] += 1000.0
-        after = PM._lgbm_resid(df, live, poisoned, nd)
+        after = _purged(df, live, poisoned, nd)
         assert not np.isclose(base, after, atol=1e-9)
 
     def test_boundary_is_exactly_horizon_plus_embargo(self):
         """gap = PURGE_HORIZON + EMBARGO: month nd-gap is dropped, nd-(gap+1) kept."""
         df, live, resid, nd = _frame()
-        base = PM._lgbm_resid(df, live, resid, nd)
+        base = _purged(df, live, resid, nd)
         gap = TS.PURGE_HORIZON + TS.EMBARGO
         dropped = resid.copy()
         dropped.loc[_month(resid.index, nd, gap)] += 1000.0          # last purged month
-        assert np.isclose(base, PM._lgbm_resid(df, live, dropped, nd), atol=1e-9)
+        assert np.isclose(base, _purged(df, live, dropped, nd), atol=1e-9)
         kept = resid.copy()
         kept.loc[_month(resid.index, nd, gap + 1)] += 1000.0         # first kept month
-        assert not np.isclose(base, PM._lgbm_resid(df, live, kept, nd), atol=1e-9)
+        assert not np.isclose(base, _purged(df, live, kept, nd), atol=1e-9)
+
+
+class TestLiveOverlayUsesRecentResiduals:
+    """The live path must NOT purge: recent residuals are observable in real time."""
+
+    def test_lgbm_default_trains_on_the_month_before_nd(self):
+        df, live, resid, nd = _frame()
+        base = PM._lgbm_resid(df, live, resid, nd)
+        poisoned = resid.copy()
+        poisoned.loc[_month(resid.index, nd, 1)] += 1000.0    # last released month
+        assert not np.isclose(base, PM._lgbm_resid(df, live, poisoned, nd), atol=1e-9)
+
+    def test_tvp_default_trains_on_the_month_before_nd(self):
+        df, live, resid, nd = _frame()
+        base = PM._tvp_resid(df, live, resid, nd)
+        poisoned = resid.copy()
+        poisoned.loc[_month(resid.index, nd, 1)] += 10.0
+        assert not np.isclose(base, PM._tvp_resid(df, live, poisoned, nd), atol=1e-9)
 
 
 class TestProductionTVPMonth:

@@ -60,9 +60,18 @@ def load_matrix(pinned=None, target: Target = HEADLINE):
     live = [n for n in pinned if status.get(n) != "unavailable"]
     raw = raw[raw.index.year >= TRAIN_FROM]
     df = F.apply_publication_lags(raw, live)
+    # Regulatory factors are event series: 0 means "no rate change / no cap reset this
+    # month", so NaNs INSIDE the source's observed span are true zeros. Past its last
+    # observation they are NOT — filling there asserts "no event" for months nobody has
+    # recorded yet, which is how a +13% Ofgem cap reset entered the July-2026 nowcast as
+    # a 0 (docs/postmortem_2026_07.md §3, cause 1). Leave those NaN so they surface as
+    # stale like any other factor.
     for rf in target.reg:
         if rf in df.columns:
-            df[rf] = df[rf].fillna(0)
+            observed = df[rf].dropna()
+            if len(observed):
+                span = df.index <= observed.index[-1]
+                df.loc[span, rf] = df.loc[span, rf].fillna(0)
     df = df.resample("ME").last()
     # Ensure the matrix extends one month past the last target actual so nowcast() always has a
     # month to forecast — even for AA-only targets with no factors extending the ragged edge

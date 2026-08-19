@@ -143,6 +143,64 @@ Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not
     fresher live fetches. Those are model-design/data-integrity decisions, not defects in the
     frozen spec.
 
+- **2026-08-19 — Live path no longer purges/embargoes recent residuals.** The purge/embargo
+  window is a backtest device: it stops a *test* month's YoY window leaking into training.
+  Applied to a live nowcast it only discarded residuals a real-time analyst can legitimately
+  see (every month up to the last CPI release), and `two_stage.py` had always documented the
+  purge as backtest-only. `_lgbm_resid` now takes `purge_horizon`/`embargo` arguments that
+  default to OFF; walk-forward backtests pass `TS.PURGE_HORIZON`/`TS.EMBARGO` as before.
+  - **Trade-off (accepted):** the overlay now sees the last 12 months of residuals, which are
+    heavily autocorrelated with the target month's. That is information, not leakage — but it
+    means the overlay extrapolates recent residual momentum. July-2026: LGBM resid −0.046 →
+    −0.195 before the other changes below, i.e. it leaned *against* the cap step.
+
+- **2026-08-19 — NEW LAYER: administered prices (headline only).**
+  `Forecast = AA + λ·Overlay + AdminStep`, where `AdminStep = κ·β·cap_pct_change` and
+  `code/production/admin_prices.py` owns the arithmetic. Rationale: the AA residual has RMSE
+  **0.83 in Ofgem cap-reset months against 0.32 in all other months** — the model's error is
+  concentrated in the ~1 month in 4 this layer covers — while the `ofgem_cap_delta` factor
+  that was supposed to carry it has **0.0% LightGBM gain** (nonzero in 23 of 306 months) and
+  moved the forecast by 0.000 for *any* value fed to it. A regulated quarterly step announced
+  six weeks ahead is arithmetic, not something to learn.
+  - **β (pass-through):** least squares through the origin of the realised electricity + gas
+    CPI contribution on the announced cap % change; ≈0.0176pp of CPI per 1% of cap, corr
+    0.853, R²(origin) 0.74, n=20. Below 1:1 because the cap governs standard variable tariffs
+    while CPI prices all tariffs, and standing charges move separately. Re-estimated from
+    PRIOR resets only at every evaluation.
+  - **κ = 0.75 (chosen):** governance haircut in the spirit of λ. Walk-forward over reset
+    months, β from prior resets only: RMSE **0.730 → 0.671 (rel 0.918)** at MIN_PRIOR=8;
+    on the longer window (MIN_PRIOR=4) **0.796 → 0.655 (rel 0.824)**. Better in 7/11 and
+    10/15 reset months. κ=1.0 wins marginally on the strict window and loses on the long one
+    (the 2022 crisis reset overshoots by −1.23), so the haircut buys crisis-month safety.
+  - **Scope:** HEADLINE only (`Target.admin_layer`). Core CPI is ex-energy by construction.
+  - **Data:** `data/ofgem_cap.csv` is now maintained by `admin_prices.refresh_cap_csv()`,
+    which rebuilds each quarter's bill from Ofgem's published unit rates at a FIXED
+    consumption basis. Ofgem re-based its TDCV in July 2026 (£1,862 old basis vs £1,663 new);
+    a level series that switches basis mid-stream invents a step, so only fixed-basis ratios
+    are ever used.
+  - **July-2026 effect:** cap +13.5% → step **+0.178pp**.
+
+- **2026-08-19 — Data-freshness guards.** (a) A CSV drop-in is now authoritative only for the
+  span it covers; months after its last observation are spliced from the live fetch (raw,
+  before the transform), status `csv+live`. `csv_frozen: True` opts the target series out,
+  since their deliberate truncation is what pins the nowcast month. (b) Regulatory factors are
+  zero-filled only INSIDE their source's observed span — past it they stay NaN instead of
+  asserting "no event". (c) `nowcast()` reports `stale_factors`: event series must cover the
+  target month exactly, everything else gets `factor_health`'s pub_lag + grace budget.
+  All three failed silently in July-2026.
+
+- **2026-08-19 — Run manifests.** Every run writes `data/production/runs/<target>_<YYYY-MM>.json`
+  with the nowcast, the factor row the overlays saw, per-factor source status and last
+  observation, and the git SHA. The July post-mortem could not reconstruct the inputs exactly,
+  because the factor matrix is fetched live and moves continuously.
+
+- **2026-08-19 — New candidate factor: `uk_pump_price`.** DESNZ weekly road-fuel prices
+  (mean of ULSP/ULSD), monthly MEAN, pub_lag=0. The direct CPI motor-fuel input: its monthly
+  mean tracks CPI 07.2.2 MoM at **corr 0.993** (vs 0.831 for a month-end close, n=271), while
+  `oil_brent` is crude — which led pump prices by weeks and pointed the wrong way in July-2026
+  (Brent +32% MoM, CPI motor fuels −3.2%). Candidate only: replacing or joining `oil_brent`
+  in the PINNED set requires the factor race + validation gate.
+
 ## 12. Core CPI nowcast (dual output, added 2026-07-23)
 
 `model.py` now prints a **second** nowcast alongside headline: **Core CPI YoY** (ex energy, food,

@@ -144,31 +144,46 @@ two-thirds of the gap, from public information, with no model retraining.
 1. ~~`production/model.py` — pass the prediction row to TVP explicitly.~~ Shipped:
    `BaseModel._nowcast_row` / `BaseModel.nowcast` / `TVP.nowcast` take an optional `nowcast_date`
    (default behaviour unchanged for every other caller); `production.model._tvp_resid` pins it to
-   `nd`. Training rows stay embargoed. Covered by `tests/test_production_overlay.py::
+   `nd`. Covered by `tests/test_production_overlay.py::
    TestProductionTVPMonth`; `test_headline_regression.py` re-based off unreproducible goldens onto
    spec + arithmetic invariants. Governance entry: `docs/final_model.md` §11.
 
-**Data-integrity fixes:**
+**Data-integrity fixes — DONE 2026-08-19:**
 
-2. `two_stage.load_matrix` — stop `fillna(0)` on regulatory factors *beyond the source's last
-   observation*. Fill zeros inside the observed span; leave months after the CSV ends as NaN and
-   surface them like any other stale factor.
-3. `factors.load_factor` — when a CSV drop-in ends earlier than the live fetch, prefer the live
-   series (or at minimum warn). Add a freshness assertion to the production run.
-4. Automate `ofgem_cap.csv` (Ofgem publishes the cap ~6 weeks before it takes effect, so pub_lag=0
-   is honest) or add it to a pre-run checklist.
+2. ~~`two_stage.load_matrix` — stop `fillna(0)` on regulatory factors beyond the source's last
+   observation.~~ Shipped: zeros fill only INSIDE the observed span; later months stay NaN.
+3. ~~`factors.load_factor` — prefer the live series when the CSV drop-in ends earlier.~~ Shipped:
+   the CSV is authoritative for its own span and is spliced forward from the live fetch (raw,
+   pre-transform; status `csv+live`), with `csv_frozen: True` opting the target series out.
+   `nowcast()` also reports `stale_factors` — event series must cover the target month exactly,
+   everything else gets `factor_health`'s pub_lag + grace budget.
+4. ~~Automate `ofgem_cap.csv`.~~ Shipped: `admin_prices.refresh_cap_csv()` rebuilds each quarter's
+   bill from Ofgem's published unit rates at a fixed consumption basis (immune to the July-2026
+   TDCV re-basing) and appends any quarter the CSV is missing. It runs at the start of every
+   production run.
 
-**Model-design questions (require governance):**
+**Model design — DONE 2026-08-19 (governance entry in `docs/final_model.md` §11):**
 
-5. The regulated-energy channel needs a representation the learners can use — a level diff in £/yr
-   that is zero 3 months in 4 is invisible to a regularised GBM. A direct **CPI-contribution
-   feature** (announced cap % × per-fuel weight × historical pass-through, in pp) is the natural
-   form, and is known ex-ante.
-6. Replace or complement contemporaneous `oil_brent` with a lagged/3-month form (`oil_brent_3m`
-   already exists as a candidate) or with weekly UK pump prices, which is the actual transmission
-   channel for the motor-fuel component.
+5. ~~The regulated-energy channel needs a representation the learners can use.~~ Shipped as a
+   layer rather than a factor: `Forecast = AA + λ·Overlay + AdminStep`, `AdminStep = κ·β·cap_%`
+   with κ=0.75 and β≈0.0176pp per 1% of cap re-estimated from prior resets only. Walk-forward
+   over reset months: RMSE 0.730 → 0.671 (rel 0.918, MIN_PRIOR=8); 0.796 → 0.655 (rel 0.824,
+   MIN_PRIOR=4). Headline only — core CPI is ex-energy.
+6. ~~Replace or complement contemporaneous `oil_brent` with pump prices.~~ Partially shipped:
+   `uk_pump_price` (DESNZ weekly road-fuel prices, monthly mean) is in the registry as a
+   CANDIDATE — corr 0.993 with CPI 07.2.2 MoM against 0.831 for a month-end close. Pinning it,
+   or retiring `oil_brent` in its favour, still needs the factor race + validation gate.
 
----
+**Also shipped:** per-run manifests (`data/production/runs/<target>_<YYYY-MM>.json`) recording the
+factor row, per-factor source status and last observation, and the git SHA — this post-mortem could
+not reconstruct July's inputs exactly. And the live path no longer purges/embargoes recent
+residuals: that window is a backtest device, and every residual up to the last CPI release is
+observable in real time.
+
+**Restated July-2026 nowcast.** With all of the above, the model would have printed **2.768**
+against the 2.90 actual (error −0.132, versus −0.338 as-run): AA 2.516 + TVP 0.058 + LGBM 0.017 +
+AdminStep 0.178. The live scorecard keeps the as-run 2.562 — this is what the fixed pipeline does,
+not a rewrite of the record.
 
 ## Sources
 

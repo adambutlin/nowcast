@@ -50,9 +50,10 @@ def test_headline_spec_is_frozen(headline):
 
 
 def test_headline_forecast_is_the_shrunk_overlay(headline):
-    """forecast = AA + λ·(0.5·TVP + 0.5·LGBM), assembled from the reported legs."""
-    expected = headline["aa"] + 0.5 * (0.5 * headline["tvp_resid"] +
-                                       0.5 * headline["lgbm_resid"])
+    """forecast = AA + λ·(0.5·TVP + 0.5·LGBM) + AdminStep, from the reported legs."""
+    expected = (headline["aa"] + 0.5 * (0.5 * headline["tvp_resid"] +
+                                        0.5 * headline["lgbm_resid"])
+                + headline["admin_step"])
     assert headline["forecast"] == pytest.approx(expected, abs=1e-3)
     assert headline["tvp_contribution"] == pytest.approx(0.25 * headline["tvp_resid"], abs=1e-3)
     assert headline["lgbm_contribution"] == pytest.approx(0.25 * headline["lgbm_resid"], abs=1e-3)
@@ -60,6 +61,16 @@ def test_headline_forecast_is_the_shrunk_overlay(headline):
 
 def test_headline_targets_the_first_unreleased_month(headline):
     assert headline["nowcast_date"] == str(_first_unreleased(T.HEADLINE))
+
+
+def test_admin_layer_is_headline_only(headline, core):
+    """Core CPI excludes energy by construction, so a cap reset cannot touch it."""
+    assert T.HEADLINE.admin_layer is True and T.CORE.admin_layer is False
+    assert "AdminStep" in headline["spec"] and "AdminStep" not in core["spec"]
+    assert core["admin_step"] == 0.0
+    if headline["admin_step"]:                           # a reset month
+        d = headline["admin_detail"]
+        assert d["reason"] == "applied" and d["cap_pct"] != 0
 
 
 def test_core_targets_the_same_month_and_is_finite(core, headline):

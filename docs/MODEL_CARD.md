@@ -3,14 +3,15 @@
 | field | value |
 |---|---|
 | **Name** | UK CPI YoY two-stage nowcast |
-| **Version** | 1.0 (frozen 2026-06-19) |
-| **Spec** | `Forecast = AA + 0.25·TVP + 0.25·LGBM` (AA + λ·overlay, λ=0.5, overlay = 0.5 TVP + 0.5 LGBM) |
+| **Version** | 1.1 (frozen 2026-06-19; TVP month fix + administered-price layer 2026-08-19) |
+| **Spec** | `Forecast = AA + 0.25·TVP + 0.25·LGBM + AdminStep` (AA + λ·overlay + administered-price step; λ=0.5, overlay = 0.5 TVP + 0.5 LGBM; `AdminStep = 0.75·β·Ofgem-cap-%`, headline only, zero outside cap-reset months) |
 | **Entry point** | `code/production/model.py` (`nowcast()` / `python -m`) |
 | **Target** | UK CPI all-items YoY (ONS D7G7), reference-month nowcast |
 | **Members** | AutoARIMA (anchor) + TVP + LightGBM, all on `code/factors.py` PINNED set |
 | **Standpoint** | month-end T (info ≤ T); release is T+15…T+21. NOT release-day / NOT T-30 / NOT post-month-end updating |
 | **Training** | walk-forward, expanding; AA from 2001, overlay residual from vintage; eval 2015-2024 |
 | **Weights** | fixed; no regime switching, no detector, no latent state |
+| **Known gaps** | motor-fuel channel still runs off crude (`oil_brent`), not pump prices — `uk_pump_price` is a candidate pending the factor race |
 
 ## Intended use
 Monthly point nowcast of UK CPI YoY for the first unreleased reference month, as a **research/
