@@ -797,18 +797,36 @@ def _yf_daily(ticker):
     return c.dropna().sort_index()
 
 
+def _gbp_eur_daily():
+    """EUR per GBP, derived exactly as factors._gbp_eur does but without the
+    month-end resample: USD-per-GBP divided by USD-per-EUR, both FRED daily."""
+    gbp = _fred_daily("DEXUSUK")
+    eur = _fred_daily("DEXUSEU").reindex(gbp.index).ffill()
+    return (gbp / eur).dropna()
+
+
 # Daily-resolution members of the panel. Everything else is natively monthly or
 # lower and is read through factors.build_matrix in panel.py.
+#
+# Verified against FRED on 2026-08-19 (median observation gap over 2024):
+#   DCOILBRENTEU 1d, DHHNGSP 1d, DEXUSUK 1d, DEXUSEU 1d  -> genuinely daily
+#   IRLTLT01GBM156N 31d, PCOPPUSDM 31d, PWHEAMTUSDM 31d  -> MONTHLY at source
+# so uk_gilt_10y, copper_price and wheat_price are NOT daily despite the
+# registry describing them as market rates, and are marked freq="monthly" in
+# panel.py. Sources here mirror the registry's own fetchers so the DFM panel and
+# production see the same underlying data.
+#
+# gas_eu is deliberately absent: factors._gas_eu_ttf blends daily TTF (2017+)
+# onto IMF monthly (1960+), so a daily-only fetch would silently drop 1997-2016
+# — the shock windows this model most needs. It stays monthly, which costs
+# intra-month gas detail at the T-30..T-7 origins but nothing at d=T, where the
+# headline comparison against production is made. Revisit in Plan 4.
 FETCHERS = {
-    "oil_brent":    lambda: _fred_daily("DCOILBRENTEU"),
-    "gas_hh":       lambda: _fred_daily("DHHNGSP"),
-    "gbpusd":       lambda: _fred_daily("DEXUSUK"),
-    "uk_gilt_10y":  lambda: _fred_daily("IRLTLT01GBM156N"),
-    "vix":          lambda: _yf_daily("^VIX"),
-    "gas_eu":       lambda: _yf_daily("TTF=F"),
-    "gbp_eur":      lambda: _yf_daily("GBPEUR=X"),
-    "copper_price": lambda: _yf_daily("HG=F"),
-    "wheat_price":  lambda: _yf_daily("ZW=F"),
+    "oil_brent": lambda: _fred_daily("DCOILBRENTEU"),
+    "gas_hh":    lambda: _fred_daily("DHHNGSP"),
+    "gbpusd":    lambda: _fred_daily("DEXUSUK"),
+    "gbp_eur":   _gbp_eur_daily,
+    "vix":       lambda: _yf_daily("^VIX"),
 }
 
 
@@ -1007,11 +1025,11 @@ PANEL_SERIES = {
     "uk_services_cpi":   dict(block="nominal",  transform="yoy",    freq="monthly"),
     "uk_rents":          dict(block="nominal",  transform="yoy",    freq="monthly"),
     "uk_be5":            dict(block="nominal",  transform="level",  freq="monthly"),
-    "uk_gilt_10y":       dict(block="nominal",  transform="diff",   freq="daily"),
+    "uk_gilt_10y":       dict(block="nominal",  transform="diff",   freq="monthly"),
     "slope_2s10s":       dict(block="nominal",  transform="level",  freq="monthly"),
     # ── energy (5) ───────────────────────────────────────────────────────────
     "oil_brent":         dict(block="energy",   transform="logret", freq="daily"),
-    "gas_eu":            dict(block="energy",   transform="logret", freq="daily"),
+    "gas_eu":            dict(block="energy",   transform="logret", freq="monthly"),
     "gas_hh":            dict(block="energy",   transform="logret", freq="daily"),
     "imf_all_commodity": dict(block="energy",   transform="logret", freq="monthly"),
     "oil_vol_6m":        dict(block="energy",   transform="level",  freq="monthly"),
@@ -1020,7 +1038,7 @@ PANEL_SERIES = {
     "semiconductors_ppi":dict(block="supply",   transform="logret", freq="monthly"),
     "chemicals_ppi":     dict(block="supply",   transform="logret", freq="monthly"),
     "metals_index":      dict(block="supply",   transform="logret", freq="monthly"),
-    "copper_price":      dict(block="supply",   transform="logret", freq="daily"),
+    "copper_price":      dict(block="supply",   transform="logret", freq="monthly"),
     "timber_price":      dict(block="supply",   transform="logret", freq="monthly"),
     # ── fx (3) ───────────────────────────────────────────────────────────────
     "gbp_eer":           dict(block="fx",       transform="diff",   freq="monthly"),
@@ -1028,7 +1046,7 @@ PANEL_SERIES = {
     "gbp_eur":           dict(block="fx",       transform="logret", freq="daily"),
     # ── food (3) — the only genuinely new channel vs production ──────────────
     "food_price_index":  dict(block="food",     transform="logret", freq="monthly"),
-    "wheat_price":       dict(block="food",     transform="logret", freq="daily"),
+    "wheat_price":       dict(block="food",     transform="logret", freq="monthly"),
     "vegetable_oil_price": dict(block="food",   transform="logret", freq="monthly"),
 }
 
