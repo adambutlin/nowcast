@@ -195,11 +195,15 @@ DRAWS_FIRST, BURN_FIRST = 2000, 1000     # first walk-forward fit
 DRAWS_WARM, BURN_WARM = 800, 200         # warm-started fits thereafter
 SEED = 20260819
 
-# ── forecast path origins, in days relative to reference month-end ───────────
-# Negative = before month-end. Positive = after, inside the release window.
-# "R-1" is resolved per month from the actual release date (release_calendar).
-ORIGIN_OFFSETS = [-30, -21, -14, -7, 0, 5, 10]
-ORIGIN_LABELS = ["T-30", "T-21", "T-14", "T-7", "T", "T+5", "T+10", "R-1"]
+# ── forecast path origins ────────────────────────────────────────────────────
+# (label, days relative to reference month-end). Negative = before month-end,
+# positive = after, inside the release window. R-1's offset is None because it is
+# resolved per month from the actual ONS release date (dfm.release_calendar), not
+# from a fixed day count — the two cannot be a pair of parallel lists without
+# inviting a zip() that silently drops it.
+ORIGINS = [("T-30", -30), ("T-21", -21), ("T-14", -14), ("T-7", -7),
+           ("T", 0), ("T+5", 5), ("T+10", 10), ("R-1", None)]
+ORIGIN_LABELS = [label for label, _ in ORIGINS]
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -3483,7 +3487,7 @@ Deliberately deferred, each to its own plan, because the spec's §4.3 gate forbi
 | §1.7 availability, staleness | Task 5 step 5, `panel.staleness_report` |
 | §2.1 dated release calendar | Tasks 2, 3, 5 step 6 |
 | §2.2 as-of panel, daily/quarterly aggregation | Tasks 4, 6 |
-| §2.3 T-30 → R-1 path | **Plan 4** (origins live in `config.ORIGIN_OFFSETS` already) |
+| §2.3 T-30 → R-1 path | **Plan 4** (origins live in `config.ORIGINS` already) |
 | §2.4 leakage tests | Task 4, Task 6, Task 11 |
 | §3 MoM target, YoY reconstruction, rounding floor | Task 7 |
 | §4.1 arm ladder | Task 10 (`ARMS`) |
