@@ -109,6 +109,39 @@ Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not
   - **Unchanged by design:** λ=0.5, members, weights. Diagnostic walk-forwards in `timing/`
     (`residual_lgbm.py`, `may2026_reconstruction.py`) and the in-sample SHAP screen in
     `retrain_pinned.py` were not modified.
+  - **Caveat added 2026-08-19:** the impact figures above were measured through the TVP
+    prediction-month defect below, so they conflate the embargo's effect on TVP training with
+    a 13-month slip in the month TVP was forecasting. Treat "TVP resid 0.641 → −0.067" as a
+    historical record of what the code did, not as the embargo's isolated effect.
+
+- **2026-08-19 — BUG FIX: the TVP leg was forecasting a 13-month-stale month.** `nowcast()`
+  embargoes the residual column before handing it to the TVP, so that column's last non-NaN
+  month is `PURGE_HORIZON + EMBARGO = 13` months before `nd`. `BaseModel._nowcast_row` infers
+  its target month from that column, so the TVP was predicting the first *embargoed* month and
+  reading THAT month's factor row — the July-2026 overlay was computed from June-2025 factors.
+  The leg was therefore blind to current-month shocks (verified: its output was invariant to
+  every 2026-07 factor value, including a +£213 Ofgem cap step). LGBM was never affected — it
+  pins its prediction row explicitly.
+  - **Fix:** `BaseModel._nowcast_row` / `BaseModel.nowcast` / `TVP.nowcast` take an optional
+    `nowcast_date`; `production.model._tvp_resid` pins it to `nd`, mirroring `_lgbm_resid`.
+    Default behaviour (month inferred from the target column) is unchanged for every other
+    caller. Training rows stay embargoed — only the predicted month moved.
+  - **Forecast impact:** July-2026 (live) **2.562 → 2.534**, TVP resid 0.230 → 0.119; core
+    2.526 → 2.536. June-2026 re-run with the target frozen at May-2026 on today's factor data:
+    **2.711 → 2.796**, TVP resid −0.067 → 0.273.
+  - **Honest scoring note:** the defect *flattered* both scored months. Against actuals, the
+    fixed model would have logged July err −0.366 (vs −0.338 as-run) and June err +0.196 (vs
+    +0.083 as-run). The live scorecard keeps the as-run values; the fixed path is scored from
+    August-2026 onward. n=2 — this is not evidence about the fix, only a caveat on the record.
+  - **Regression test re-based:** `tests/test_headline_regression.py` no longer pins June-2026
+    goldens (2.726 / 2.683). They were not reproducible even before this fix — re-running the
+    pre-fix code against a May-2026-frozen target on current factor data gives 2.711, because
+    the factor matrix is revised and extended continuously. The test now locks the frozen spec
+    (λ, weights, 9 pinned / 8 live) and the forecast arithmetic instead.
+  - **Not fixed here (see `docs/postmortem_2026_07.md`):** `ofgem_cap_delta` carries no weight
+    in either leg, reg-factor `fillna(0)` masks a missing source, and CSV drop-ins shadow
+    fresher live fetches. Those are model-design/data-integrity decisions, not defects in the
+    frozen spec.
 
 ## 12. Core CPI nowcast (dual output, added 2026-07-23)
 

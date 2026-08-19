@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
 
 from production import model as PM
 import two_stage as TS
+import uk_model_zoo as Z
+import validation as V
 
 
 def _monthly(start, n):
@@ -71,3 +73,45 @@ class TestProductionLGBMPurge:
         kept = resid.copy()
         kept.loc[_month(resid.index, nd, gap + 1)] += 1000.0         # first kept month
         assert not np.isclose(base, PM._lgbm_resid(df, live, kept, nd), atol=1e-9)
+
+
+class TestProductionTVPMonth:
+    """The TVP leg must forecast `nd`, not the month its embargoed target implies.
+
+    production.model embargoes the residual column before handing it to the TVP,
+    so the column's last non-NaN month is PURGE+EMBARGO months before `nd`.
+    BaseModel._nowcast_row infers the prediction month from that column, which
+    would silently point the TVP at a 13-month-stale month (and its stale factor
+    row). _tvp_resid must pin the prediction month to `nd` instead.
+    """
+
+    def _embargoed(self, resid, nd):
+        return V.embargo_series(resid, nd, TS.PURGE_HORIZON, TS.EMBARGO)
+
+    def test_overlay_responds_to_target_month_factors(self):
+        df, live, resid, nd = _frame()
+        emb = self._embargoed(resid, nd)
+        base = PM._tvp_resid(df, live, emb, nd)
+        moved = df.copy()
+        moved.loc[nd, live] = moved.loc[nd, live] + 5.0
+        assert not np.isclose(base, PM._tvp_resid(moved, live, emb, nd), atol=1e-9)
+
+    def test_overlay_ignores_the_stale_inferred_month(self):
+        """nd-(PURGE+EMBARGO) is neither the prediction row nor a training row."""
+        df, live, resid, nd = _frame()
+        emb = self._embargoed(resid, nd)
+        gap = TS.PURGE_HORIZON + TS.EMBARGO
+        base = PM._tvp_resid(df, live, emb, nd)
+        stale = df.copy()
+        stale.loc[_month(df.index, nd, gap), live] = stale.loc[_month(df.index, nd, gap), live] + 5.0
+        assert np.isclose(base, PM._tvp_resid(stale, live, emb, nd), atol=1e-9)
+
+    def test_zoo_nowcast_date_default_is_unchanged(self):
+        """Omitting nowcast_date keeps the historic inference from the target column."""
+        df, live, resid, nd = _frame()
+        d = df.copy(); d["resid"] = self._embargoed(resid, nd)
+        _, inferred = Z.TVP().nowcast(d, live, "resid")
+        gap = TS.PURGE_HORIZON + TS.EMBARGO
+        assert pd.Timestamp(inferred) == _month(df.index, nd, gap)
+        _, pinned = Z.TVP().nowcast(d, live, "resid", nowcast_date=nd)
+        assert pd.Timestamp(pinned) == nd

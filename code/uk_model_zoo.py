@@ -182,11 +182,15 @@ class BaseModel:
         return None, {}
 
     @staticmethod
-    def _nowcast_row(df, factors, target):
+    def _nowcast_row(df, factors, target, nowcast_date=None):
         """
         Return (feature_row, nowcast_date) for the first unreleased CPI month.
 
-        'First unreleased' = the earliest index where target is NaN.
+        'First unreleased' = the earliest index where target is NaN, unless
+        `nowcast_date` pins it explicitly. Pin it whenever the target column has
+        been blanked for reasons other than publication (e.g. a purge/embargo
+        window): the inferred month would then be the first embargoed month, and
+        the model would forecast that stale month with its stale factor row.
         Ragged-edge ONS series (uk_rents_lag1, uk_vacancies) are forward-filled
         from the most recent published value — exactly what a real-time analyst
         would do when a monthly ONS release has not yet been ingested by dbnomics.
@@ -206,7 +210,9 @@ class BaseModel:
         # Identify the first month AFTER the last known CPI release.
         # Using df[target].isna().index[0] would incorrectly pick up pre-history
         # NaN rows (before D7G7 began in 1989) when the full raw matrix is passed.
-        if target in df.columns:
+        if nowcast_date is not None:
+            nowcast_date = pd.Timestamp(nowcast_date)
+        elif target in df.columns:
             known = df[target].dropna()
             if len(known) > 0:
                 last_known = known.index[-1]
@@ -246,16 +252,17 @@ class BaseModel:
 
         return row, nowcast_date
 
-    def nowcast(self, df, factors, target):
+    def nowcast(self, df, factors, target, nowcast_date=None):
         """
         Fit on all months with known target+features; predict the first unreleased
         CPI month using a ragged-edge-corrected feature row.
+        `nowcast_date` pins the predicted month (see _nowcast_row).
         Returns (prediction, nowcast_date) or (np.nan, None).
         """
         d = _prep(df, factors, target)
         if len(d) == 0:
             return np.nan, None
-        row, nowcast_date = self._nowcast_row(df, factors, target)
+        row, nowcast_date = self._nowcast_row(df, factors, target, nowcast_date)
         if row is None:
             return np.nan, nowcast_date
         try:
@@ -550,15 +557,16 @@ class TVP(BaseModel):
         s = pd.Series(contrib.mean(axis=0), index=col_names)
         return s[factors], self.importance_type
 
-    def nowcast(self, df, factors, target):
+    def nowcast(self, df, factors, target, nowcast_date=None):
         """
         Run Kalman on all training data; predict 1 step ahead using the final
         state (beta) without an update step — no realized target needed.
+        `nowcast_date` pins the predicted month (see BaseModel._nowcast_row).
         """
         d = _prep(df, factors, target)
         if len(d) == 0:
             return np.nan, None
-        row, nowcast_date = self._nowcast_row(df, factors, target)
+        row, nowcast_date = self._nowcast_row(df, factors, target, nowcast_date)
         if row is None:
             return np.nan, nowcast_date
         if self.WINDOW is not None:

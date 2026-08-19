@@ -59,6 +59,22 @@ def _residual_history(df, target: Target = HEADLINE):
     return (aa["actual"] - aa["pred"]).rename("resid")
 
 
+def _tvp_resid(df, live, resid, nd):
+    """TVP overlay on the PURGED + EMBARGOED residual history, predicting month nd.
+
+    The residual column handed to the Kalman filter is embargoed, so its last
+    non-NaN month is TS.PURGE_HORIZON + TS.EMBARGO months before nd. Left to
+    infer its own target month from that column, BaseModel._nowcast_row would
+    point the TVP at the first embargoed month and feed it THAT month's factor
+    row — a 13-month-stale forecast presented as the current-month overlay
+    (fixed 2026-08-19; see docs/postmortem_2026_07.md §3). Pin the month
+    explicitly, exactly as _lgbm_resid pins its prediction row."""
+    d = df.copy()
+    d["resid"] = resid
+    pred, _ = Z.TVP().nowcast(d, live, "resid", nowcast_date=nd)
+    return float(pred)
+
+
 def _lgbm_resid(df, live, resid, nd):
     """LGBM overlay on PURGED + EMBARGOED residual history, predicting month nd.
 
@@ -110,8 +126,7 @@ def nowcast(df=None, live=None, target: Target = HEADLINE):
     # blank the trailing PURGE_HORIZON+EMBARGO months before nd so neither overlay trains
     # into the YoY-autocorrelated window. See validation.embargo_series.
     resid = V.embargo_series(resid_full, nd, TS.PURGE_HORIZON, TS.EMBARGO)
-    d = df.copy(); d["resid"] = resid
-    tvp_resid, _ = Z.TVP().nowcast(d, live, "resid")
+    tvp_resid = _tvp_resid(df, live, resid, nd)
     lgbm_resid = _lgbm_resid(df, live, resid, nd)
     ow = target.overlay_weights
     overlay = ow["tvp"] * float(tvp_resid) + ow["lgbm"] * lgbm_resid
