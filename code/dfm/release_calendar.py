@@ -20,12 +20,18 @@ The ONS release slug is NOT deterministic across eras — verified 2026-08-19:
 so several slug patterns are tried per month, newest first.
 
 The rule is materially wrong: 2022-03 published 13 Apr against a rule date of
-20 Apr, and 2026-06 published 22 Jul against 15 Jul. Fallback share is therefore
-reported, never silently absorbed.
+20 Apr, and 2026-06 published 22 Jul against 15 Jul. The rule can land BEFORE
+the true release (2026-06: rule=15 Jul, actual=22 Jul) — a silent fallback there
+is not merely imprecise, it is look-ahead bias, since it would admit a value
+into the information set before it was genuinely published. So `ons_release_date`
+only ever caches a *confirmed* answer (a real timestamp, or a confirmed 404);
+anything else — timeout, DNS blip, non-404 HTTP error, malformed JSON, a 200
+with no release_date — raises loudly instead of degrading silently to `rule`.
+Fallback share is therefore always visible, never silently absorbed.
 """
 import calendar
 import json
-import os
+import urllib.error
 import urllib.request
 
 import pandas as pd
@@ -35,6 +41,11 @@ from dfm import config as C
 _UA = {"User-Agent": "Mozilla/5.0 (UK CPI nowcast research; contact via repo)"}
 _RELEASE_URL = "https://www.ons.gov.uk/releases/{slug}/data"
 _MEMO = {}
+
+# Empirically, ONS release pages exist from 2016-01 onward; 2015-06 and earlier
+# 404 on every slug pattern (verified 2026-08-19). Months before this are known
+# absences, not lookups — do not hammer the ONS site to rediscover that.
+_ONS_RELEASE_PAGES_FROM = pd.Timestamp("2016-01-01")
 
 # Non-ONS publication offsets, in days after the end of the reference month.
 # Extends the offsets already encoded in code/timing/nowcast_window.py.
@@ -84,24 +95,55 @@ def slug_candidates(ref_month):
 
 
 def _fetch_release_page(slug):
-    """Return the release timestamp for an ONS release slug, or None if 404."""
+    """Return the release timestamp for an ONS release slug.
+
+    Returns None ONLY for a confirmed HTTP 404 (the release page genuinely
+    does not exist). Everything else that keeps us from getting a confirmed
+    answer — a non-404 HTTP error, a connection/timeout error, malformed
+    JSON, or a 200 response missing description.release_date — raises a
+    RuntimeError naming the slug. A transient failure must never be mistaken
+    for a confirmed absence: doing so would let `ons_release_date` fall back
+    to `rule`, which can predate the true release and admit data early.
+    """
     req = urllib.request.Request(_RELEASE_URL.format(slug=slug), headers=_UA)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            payload = json.load(r)
-    except Exception:
-        return None
+            body = r.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise RuntimeError(f"ONS fetch failed for slug '{slug}': HTTP {e.code}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"ONS fetch failed for slug '{slug}': {e}") from e
+
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise RuntimeError(f"ONS fetch failed for slug '{slug}': malformed JSON") from e
+
     rd = (payload.get("description") or {}).get("release_date")
     if not rd:
-        return None
+        raise RuntimeError(
+            f"ONS fetch failed for slug '{slug}': 200 response missing "
+            f"description.release_date")
     return pd.Timestamp(rd).tz_localize(None)
 
 
 def ons_release_date(ref_month):
-    """Actual ONS CPI release timestamp for `ref_month`, or None if unpublished."""
+    """Actual ONS CPI release timestamp for `ref_month`, or None if unpublished.
+
+    Only ever caches a confirmed answer. A transient fetch failure raises
+    (see `_fetch_release_page`) and is NOT written to `_MEMO`, so a failed
+    month is retried cleanly on the next run rather than being poisoned to
+    None for the process lifetime.
+    """
     key = pd.Timestamp(ref_month).to_period("M")
     if key in _MEMO:
         return _MEMO[key]
+    if pd.Timestamp(ref_month) < _ONS_RELEASE_PAGES_FROM:
+        # Known absence, not a lookup: every slug pattern 404s pre-2016.
+        _MEMO[key] = None
+        return None
     found = None
     for slug in slug_candidates(ref_month):
         found = _fetch_release_page(slug)
