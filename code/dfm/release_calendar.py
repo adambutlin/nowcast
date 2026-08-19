@@ -168,3 +168,69 @@ def resolve_cpi_release(ref_month):
     if ts is not None:
         return ts, "ons_api"
     return rule_release_date(ref_month), "rule"
+
+
+def series_release(series, ref_month):
+    """(timestamp, source) for one series' observation of one reference month."""
+    if series in ONS_CPI_BULLETIN:
+        return resolve_cpi_release(ref_month)
+    end = pd.Timestamp(ref_month) + pd.offsets.MonthEnd(0)
+    if series in ONS_OTHER_OFFSET_DAYS:
+        return end + pd.Timedelta(days=ONS_OTHER_OFFSET_DAYS[series]), "provider_doc"
+    if series in PROVIDER_OFFSET_DAYS:
+        return end + pd.Timedelta(days=PROVIDER_OFFSET_DAYS[series]), "provider_doc"
+    raise KeyError(f"no publication rule for series {series!r} — add it to "
+                   f"PROVIDER_OFFSET_DAYS or ONS_OTHER_OFFSET_DAYS")
+
+
+def build_calendar(series_names, months):
+    """Dated release table: one row per (series, reference month)."""
+    rows = []
+    for name in series_names:
+        for m in months:
+            end = pd.Timestamp(m) + pd.offsets.MonthEnd(0)
+            ts, src = series_release(name, end)
+            rows.append(dict(series=name, ref_period=end, release_ts=ts, source=src))
+    cal = pd.DataFrame(rows, columns=["series", "ref_period", "release_ts", "source"])
+    bad = cal[cal["release_ts"] < cal["ref_period"]]
+    if len(bad):
+        raise ValueError(f"{len(bad)} rows publish before their reference period ends:\n{bad.head()}")
+    return cal
+
+
+def save_calendar(cal, path=None):
+    path = path or C.CALENDAR_CSV
+    cal.to_csv(path, index=False)
+    return path
+
+
+def load_calendar(path=None):
+    path = path or C.CALENDAR_CSV
+    return pd.read_csv(path, parse_dates=["ref_period", "release_ts"])
+
+
+def coverage_report(cal):
+    """Rows and share by source. The `rule` share is the honesty number."""
+    n = cal.groupby("source").size().rename("n")
+    rep = n.to_frame()
+    rep["share"] = rep["n"] / len(cal)
+    for src in ("ons_api", "provider_doc", "rule"):
+        if src not in rep.index:
+            rep.loc[src] = [0, 0.0]
+    rep["n"] = rep["n"].astype(int)
+    return rep.sort_index()
+
+
+if __name__ == "__main__":
+    from dfm import panel as P   # series list
+
+    months = pd.date_range(f"{C.EVAL_START}-01-31", "2026-07-31", freq="ME")
+    cal = build_calendar(P.all_series(), months)
+    path = save_calendar(cal)
+    rep = coverage_report(cal)
+    print(f"wrote {path}  ({len(cal)} rows)")
+    print(rep.to_string())
+    cpi = cal[cal["series"] == "cpi_index"]
+    n_rule = int((cpi["source"] == "rule").sum())
+    print(f"\nCPI bulletin: {len(cpi) - n_rule}/{len(cpi)} real ONS dates, "
+          f"{n_rule} rule fallbacks")

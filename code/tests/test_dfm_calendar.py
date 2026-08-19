@@ -153,6 +153,15 @@ class TestOnsReleaseDate:
         assert RC.ons_release_date(pd.Timestamp("2015-06-30")) is None
         assert calls == []
 
+    def test_2016_01_is_inside_the_lookup_range(self, monkeypatch):
+        """The short-circuit boundary must not swallow 2016-01, which does resolve."""
+        calls = []
+        monkeypatch.setattr(RC, "_fetch_release_page",
+                            lambda slug: calls.append(slug) or pd.Timestamp("2016-02-16"))
+        RC._MEMO.clear()
+        assert RC.ons_release_date(pd.Timestamp("2016-01-31")) == pd.Timestamp("2016-02-16")
+        assert calls, "2016-01 must trigger a real lookup, not the pre-2016 short-circuit"
+
 
 class TestResolve:
     def test_prefers_api_and_labels_source(self, monkeypatch):
@@ -171,3 +180,48 @@ def test_live_ons_lookup():
     """Real ONS fetch — run with `-m network`."""
     RC._MEMO.clear()
     assert RC.ons_release_date(pd.Timestamp("2024-11-30")).date() == pd.Timestamp("2024-12-18").date()
+
+
+class TestBuildCalendar:
+    def _months(self):
+        return pd.date_range("2024-01-31", "2024-06-30", freq="ME")
+
+    def test_every_row_has_timestamp_and_source(self, monkeypatch):
+        monkeypatch.setattr(RC, "ons_release_date", lambda m: pd.Timestamp(m) + pd.Timedelta(days=18))
+        cal = RC.build_calendar(["cpi_index", "oil_brent", "imf_all_commodity"], self._months())
+        assert set(cal.columns) == {"series", "ref_period", "release_ts", "source"}
+        assert cal["release_ts"].notna().all()
+        assert cal["source"].isin({"ons_api", "provider_doc", "rule"}).all()
+        assert len(cal) == 3 * 6
+
+    def test_release_never_precedes_end_of_reference_period(self, monkeypatch):
+        monkeypatch.setattr(RC, "ons_release_date", lambda m: pd.Timestamp(m) + pd.Timedelta(days=18))
+        cal = RC.build_calendar(["cpi_index", "oil_brent", "uk_ppi_input"], self._months())
+        assert (cal["release_ts"] >= cal["ref_period"]).all()
+
+    def test_market_series_release_at_month_end(self, monkeypatch):
+        monkeypatch.setattr(RC, "ons_release_date", lambda m: pd.Timestamp(m) + pd.Timedelta(days=18))
+        cal = RC.build_calendar(["oil_brent"], self._months())
+        assert (cal["release_ts"] == cal["ref_period"]).all()
+        assert (cal["source"] == "provider_doc").all()
+
+    def test_coverage_report_counts_rule_fallbacks(self, monkeypatch):
+        # ONS lookup fails -> every cpi_index row falls back to the rule
+        monkeypatch.setattr(RC, "ons_release_date", lambda m: None)
+        cal = RC.build_calendar(["cpi_index", "oil_brent"], self._months())
+        rep = RC.coverage_report(cal)
+        assert rep.loc["rule", "n"] == 6
+        assert rep.loc["provider_doc", "n"] == 6
+        assert abs(rep.loc["rule", "share"] - 0.5) < 1e-9
+
+    def test_roundtrip_csv(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(RC, "ons_release_date", lambda m: pd.Timestamp(m) + pd.Timedelta(days=18))
+        path = tmp_path / "cal.csv"
+        cal = RC.build_calendar(["cpi_index", "oil_brent"], self._months())
+        RC.save_calendar(cal, str(path))
+        back = RC.load_calendar(str(path))
+        pd.testing.assert_frame_equal(cal.reset_index(drop=True), back.reset_index(drop=True))
+
+    def test_unknown_series_raises(self):
+        with pytest.raises(KeyError, match="no publication rule"):
+            RC.series_release("not_a_real_series", pd.Timestamp("2024-03-31"))
