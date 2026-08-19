@@ -83,8 +83,13 @@ def main():
 
 
 def _safe_lgbm(df, live, resid, t):
+    """Per-month LGBM with the BACKTEST purge/embargo switched on explicitly.
+
+    _lgbm_resid defaults to no purge (the live path legitimately trains on every
+    released residual); a walk-forward must purge the label-horizon overlap or the
+    gate scores itself on leaked information. Governance: docs/final_model.md §11."""
     try:
-        return PM._lgbm_resid(df, live, resid, t)
+        return PM._lgbm_resid(df, live, resid, t, TS.PURGE_HORIZON, TS.EMBARGO)
     except Exception:
         return np.nan
 

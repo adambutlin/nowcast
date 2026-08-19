@@ -213,9 +213,16 @@ Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not
   already used for backtests); with both legs dead the nowcast falls back to AA + RegEvent.
   Reported as `dead_legs` and printed loudly. August-2026 headline: NaN → **2.843**, TVP dead,
   LGBM at full overlay weight.
-  - **Follow-up needed:** a quarterly factor in a monthly PINNED set will keep killing the TVP
-    late in every quarter. Either widen the ffill budget for `uk_quarterly_gdp` or reconsider
-    its place in the pinned set — a governance question, not a code fix.
+  - **Follow-up — ablation run 2026-08-19 (`code/new_factors/ablation.py`).** The trigger is
+    not quarterly cadence as such: `uk_quarterly_gdp`'s source (FRED `NGDPRSAXDCGBQ`) has
+    slipped to a last observation of 2026-01, which after `pub_lag=2` leaves August-2026
+    beyond the `pub_lag + 2` ffill budget. Historically it blocked the feature row in **1 of
+    140 months**, all of it now. Purged walk-forward 2015-2024, headline: rel-RMSE **0.9201
+    with the factor vs 0.9162 without** (RMSE 0.4312 → 0.4294, ΔRMSE −0.0018, DM +1.13,
+    one-sided p=0.13); by sub-period +0.0009 in 2015-19 and −0.0029 in 2020-24. Nominal
+    weight is not small (9.8% LGBM gain, 8.0% of TVP |β·x|), but it buys no measurable
+    accuracy and it is the only PINNED factor that can kill a leg outright. Open governance
+    choice: drop it from PINNED, widen its budget, or re-source quarterly GDP.
 
 - **2026-08-19 — Restatement of Apr–Jul 2026 through the current pipeline.**
   `code/production/restate.py <YYYY-MM> …` re-runs a past reference month by truncating the
