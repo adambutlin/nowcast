@@ -49,7 +49,12 @@ def main():
     df = pd.read_csv(SC)
     done = df[df["actual"].notna()].copy()
     L = ["# Live scorecard — UK CPI nowcast (frozen production model)", "",
-         "Production model: **AA + 0.25·TVP + 0.25·LGBM** (λ=0.5). Genesis: May 2026.", "",
+         "Production model: **AA + 0.25·TVP + 0.25·LGBM + RegEvent** (λ=0.5; RegEvent is the "
+         "announced Ofgem cap step, headline only, zero outside reset months). Genesis: May 2026.", "",
+         "**Rows are AS-RUN.** May–July 2026 were produced by the pre-2026-08-19 pipeline, before "
+         "the TVP prediction-month fix, the RegEvent layer and the data-freshness guards. They are "
+         "kept unaltered as the prospective record; `code/production/restate.py` shows what the "
+         "current pipeline makes of the same months (docs/final_model.md §11).", "",
          f"Releases scored: **{len(done)}** | forecasts logged: {len(df)}", ""]
     if len(done) == 0:
         L.append("_No realised actuals yet._")

@@ -1,6 +1,8 @@
 # Live scorecard — UK CPI nowcast (frozen production model)
 
-Production model: **AA + 0.25·TVP + 0.25·LGBM** (λ=0.5). Genesis: May 2026.
+Production model: **AA + 0.25·TVP + 0.25·LGBM + RegEvent** (λ=0.5; RegEvent is the announced Ofgem cap step, headline only, zero outside reset months). Genesis: May 2026.
+
+**Rows are AS-RUN.** May–July 2026 were produced by the pre-2026-08-19 pipeline, before the TVP prediction-month fix, the RegEvent layer and the data-freshness guards. They are kept unaltered as the prospective record; `code/production/restate.py` shows what the current pipeline makes of the same months (docs/final_model.md §11).
 
 Releases scored: **3** | forecasts logged: 3
 
