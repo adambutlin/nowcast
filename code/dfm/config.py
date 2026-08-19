@@ -3,6 +3,10 @@ dfm/config.py — single source of truth for paths, windows and model dimensions
 
 Everything downstream reads from here so the whole pipeline changes behaviour by
 editing this file, never by hard-coding in a module.
+
+Importing this module CREATES its output directories (data/dfm, plots/dfm and the
+daily/checkpoint caches). That is deliberate — every entry point needs them — but
+it means the import fails on a read-only filesystem rather than degrading.
 """
 import os
 
@@ -41,8 +45,12 @@ DRAWS_FIRST, BURN_FIRST = 2000, 1000     # first walk-forward fit
 DRAWS_WARM, BURN_WARM = 800, 200         # warm-started fits thereafter
 SEED = 20260819
 
-# ── forecast path origins, in days relative to reference month-end ───────────
-# Negative = before month-end. Positive = after, inside the release window.
-# "R-1" is resolved per month from the actual release date (release_calendar).
-ORIGIN_OFFSETS = [-30, -21, -14, -7, 0, 5, 10]
-ORIGIN_LABELS = ["T-30", "T-21", "T-14", "T-7", "T", "T+5", "T+10", "R-1"]
+# ── forecast path origins ────────────────────────────────────────────────────
+# (label, days relative to reference month-end). Negative = before month-end,
+# positive = after, inside the release window. R-1's offset is None because it is
+# resolved per month from the actual ONS release date (dfm.release_calendar), not
+# from a fixed day count — the two cannot be a pair of parallel lists without
+# inviting a zip() that silently drops it.
+ORIGINS = [("T-30", -30), ("T-21", -21), ("T-14", -14), ("T-7", -7),
+           ("T", 0), ("T+5", 5), ("T+10", 10), ("R-1", None)]
+ORIGIN_LABELS = [label for label, _ in ORIGINS]
