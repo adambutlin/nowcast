@@ -16,6 +16,7 @@ Spec: docs/superpowers/specs/2026-06-22-purged-embargo-backtest-design.md
 import os, sys
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "new_factors"))
@@ -144,3 +145,57 @@ class TestProductionTVPMonth:
         assert pd.Timestamp(inferred) == _month(df.index, nd, gap)
         _, pinned = Z.TVP().nowcast(d, live, "resid", nowcast_date=nd)
         assert pd.Timestamp(pinned) == nd
+
+
+class TestOverlayDegradesInsteadOfReturningNaN:
+    """A dead leg must not poison the forecast.
+
+    BaseModel._nowcast_row blocks the TVP whenever a PINNED factor is past its
+    ffill budget — which happens routinely to the quarterly uk_quarterly_gdp late
+    in a quarter, and produced a NaN August-2026 headline forecast before the
+    overlay learned to renormalise over its surviving members.
+    """
+
+    def _setup(self, monkeypatch, tvp, lgbm, step=0.0):
+        from targets import Target
+        import production.model as PM
+        df, live, resid, nd = _frame()
+        df = df.copy()
+        df["y"] = np.nan                                   # target column, all unreleased
+        target = Target(name="y", label="stub", pinned=tuple(live),
+                        overlay_weights={"tvp": 0.5, "lgbm": 0.5}, lam=0.5,
+                        aa_start=2001, start=2015, end=None, reg=(),
+                        reg_event_layer=True)
+
+        class _AA:
+            def nowcast(self, *a, **k):
+                return 2.5, nd
+
+        monkeypatch.setattr(PM.Z, "AutoARIMA", _AA)
+        monkeypatch.setattr(PM, "_residual_history", lambda *a, **k: resid)
+        monkeypatch.setattr(PM, "_tvp_resid", lambda *a, **k: tvp)
+        monkeypatch.setattr(PM, "_lgbm_resid", lambda *a, **k: lgbm)
+        monkeypatch.setattr(PM.REG, "reg_event_step",
+                            lambda *a, **k: (step, {"reason": "stub"}))
+        return PM.nowcast(df, live, target)
+
+    def test_surviving_leg_takes_the_full_overlay_weight(self, monkeypatch):
+        nc = self._setup(monkeypatch, tvp=float("nan"), lgbm=0.4)
+        assert nc["dead_legs"] == ["tvp"]
+        assert nc["overlay"] == pytest.approx(0.4)          # renormalised, not halved
+        assert nc["lgbm_contribution"] == pytest.approx(0.2)
+        assert nc["tvp_contribution"] == 0.0
+        assert nc["forecast"] == pytest.approx(2.5 + 0.5 * 0.4, abs=1e-3)
+
+    def test_both_legs_alive_is_unchanged(self, monkeypatch):
+        nc = self._setup(monkeypatch, tvp=0.2, lgbm=0.4)
+        assert nc["dead_legs"] == []
+        assert nc["overlay"] == pytest.approx(0.3)
+        assert nc["forecast"] == pytest.approx(2.5 + 0.5 * 0.3, abs=1e-3)
+
+    def test_both_legs_dead_falls_back_to_the_anchor(self, monkeypatch):
+        nc = self._setup(monkeypatch, tvp=float("nan"), lgbm=float("nan"), step=0.25)
+        assert nc["dead_legs"] == ["lgbm", "tvp"]
+        assert nc["overlay"] == 0.0
+        assert nc["forecast"] == pytest.approx(2.75, abs=1e-3)   # AA + RegEvent only
+        assert np.isfinite(nc["forecast"])

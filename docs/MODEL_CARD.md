@@ -3,8 +3,8 @@
 | field | value |
 |---|---|
 | **Name** | UK CPI YoY two-stage nowcast |
-| **Version** | 1.1 (frozen 2026-06-19; TVP month fix + administered-price layer 2026-08-19) |
-| **Spec** | `Forecast = AA + 0.25·TVP + 0.25·LGBM + AdminStep` (AA + λ·overlay + administered-price step; λ=0.5, overlay = 0.5 TVP + 0.5 LGBM; `AdminStep = 0.75·β·Ofgem-cap-%`, headline only, zero outside cap-reset months) |
+| **Version** | 1.1 (frozen 2026-06-19; TVP month fix + regulatory-event layer 2026-08-19) |
+| **Spec** | `Forecast = AA + 0.25·TVP + 0.25·LGBM + RegEvent` (AA + λ·overlay + regulatory-event step; λ=0.5, overlay = 0.5 TVP + 0.5 LGBM; `RegEvent = 0.75·β·Ofgem-cap-%`, headline only, zero outside cap-reset months) |
 | **Entry point** | `code/production/model.py` (`nowcast()` / `python -m`) |
 | **Target** | UK CPI all-items YoY (ONS D7G7), reference-month nowcast |
 | **Members** | AutoARIMA (anchor) + TVP + LightGBM, all on `code/factors.py` PINNED set |

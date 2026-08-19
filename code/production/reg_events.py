@@ -1,4 +1,4 @@
-"""Administered-price layer — the Ofgem energy price cap, applied as arithmetic.
+"""Regulatory-event layer — the Ofgem energy price cap, applied as arithmetic.
 
 WHY THIS IS NOT A FACTOR. `ofgem_cap_delta` has been in the PINNED set since the
 freeze and contributes nothing: the column is zero in ~93% of months, so LightGBM
@@ -11,7 +11,7 @@ A quarterly step in a regulated price is not something to learn. It is announced
 ~6 weeks before it takes effect (so it is legitimately available at month-end T),
 it lands in one month, and its size in CPI terms is arithmetic:
 
-    AdminStep(T) = kappa * beta * cap_pct_change(T)          [pp of CPI YoY]
+    RegEvent(T) = kappa * beta * cap_pct_change(T)          [pp of CPI YoY]
 
 `cap_pct_change` is the announced change in the cap; `beta` converts 1% of cap
 into pp of CPI, estimated through the origin on PRIOR reset months only; `kappa`
@@ -35,7 +35,7 @@ import pandas as pd
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA = os.path.join(_ROOT, "data")
 CAP_CSV = os.path.join(DATA, "ofgem_cap.csv")
-CACHE = os.path.join(DATA, "admin_prices")
+CACHE = os.path.join(DATA, "reg_events")
 
 # Cap resets take effect on the 1st of these months (semi-annual pre-Oct-2022,
 # quarterly since). A cap row dated elsewhere is an ANNOUNCEMENT, not a reset.
@@ -49,7 +49,7 @@ _COMPONENTS = {"elec": ("d7dt", "CJXA.A"), "gas": ("d7du", "CJXB.A")}
 
 
 def _cached(name, fetch):
-    """Fetch, cache to data/admin_prices/<name>.csv, fall back to the cache."""
+    """Fetch, cache to data/reg_events/<name>.csv, fall back to the cache."""
     path = os.path.join(CACHE, f"{name}.csv")
     try:
         s = fetch()
@@ -58,7 +58,7 @@ def _cached(name, fetch):
             s.rename("value").to_frame().to_csv(path, index_label="date")
             return s
     except Exception as e:
-        print(f"  [admin_prices] {name} fetch failed ({e}) — using cache")
+        print(f"  [reg_events] {name} fetch failed ({e}) — using cache")
     if os.path.exists(path):
         d = pd.read_csv(path, parse_dates=["date"]).set_index("date")["value"]
         return d
@@ -133,8 +133,8 @@ def passthrough(before=None, pct=None, contrib=None):
     return float((x * y).sum() / (x * x).sum()), len(joined)
 
 
-def admin_step(nd, kappa=KAPPA, min_prior=MIN_PRIOR, pct=None, contrib=None):
-    """The administered-price adjustment for month `nd`, in pp of CPI YoY.
+def reg_event_step(nd, kappa=KAPPA, min_prior=MIN_PRIOR, pct=None, contrib=None):
+    """The regulatory-event adjustment for month `nd`, in pp of CPI YoY.
 
     Zero unless `nd` is a cap-reset month with an announced change and beta has
     enough prior resets to be worth trusting. Returns (step, detail-dict) so the

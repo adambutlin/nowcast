@@ -157,7 +157,7 @@ two-thirds of the gap, from public information, with no model retraining.
    pre-transform; status `csv+live`), with `csv_frozen: True` opting the target series out.
    `nowcast()` also reports `stale_factors` — event series must cover the target month exactly,
    everything else gets `factor_health`'s pub_lag + grace budget.
-4. ~~Automate `ofgem_cap.csv`.~~ Shipped: `admin_prices.refresh_cap_csv()` rebuilds each quarter's
+4. ~~Automate `ofgem_cap.csv`.~~ Shipped: `reg_events.refresh_cap_csv()` rebuilds each quarter's
    bill from Ofgem's published unit rates at a fixed consumption basis (immune to the July-2026
    TDCV re-basing) and appends any quarter the CSV is missing. It runs at the start of every
    production run.
@@ -165,7 +165,7 @@ two-thirds of the gap, from public information, with no model retraining.
 **Model design — DONE 2026-08-19 (governance entry in `docs/final_model.md` §11):**
 
 5. ~~The regulated-energy channel needs a representation the learners can use.~~ Shipped as a
-   layer rather than a factor: `Forecast = AA + λ·Overlay + AdminStep`, `AdminStep = κ·β·cap_%`
+   layer rather than a factor: `Forecast = AA + λ·Overlay + RegEvent`, `RegEvent = κ·β·cap_%`
    with κ=0.75 and β≈0.0176pp per 1% of cap re-estimated from prior resets only. Walk-forward
    over reset months: RMSE 0.730 → 0.671 (rel 0.918, MIN_PRIOR=8); 0.796 → 0.655 (rel 0.824,
    MIN_PRIOR=4). Headline only — core CPI is ex-energy.
@@ -180,10 +180,13 @@ not reconstruct July's inputs exactly. And the live path no longer purges/embarg
 residuals: that window is a backtest device, and every residual up to the last CPI release is
 observable in real time.
 
-**Restated July-2026 nowcast.** With all of the above, the model would have printed **2.768**
-against the 2.90 actual (error −0.132, versus −0.338 as-run): AA 2.516 + TVP 0.058 + LGBM 0.017 +
-AdminStep 0.178. The live scorecard keeps the as-run 2.562 — this is what the fixed pipeline does,
-not a rewrite of the record.
+**Restated April–July 2026.** `code/production/restate.py` re-runs a past month through the current
+pipeline (truncating the target series to the month before; factor values are today's, so revisions
+are baked in — see `docs/final_model.md` §11 for the caveat and the full table). July: **2.768** vs
+the 2.90 actual, error −0.132 against −0.338 as-run, = AA 2.516 + TVP 0.058 + LGBM 0.017 + RegEvent
+0.178. Headline RMSE over the three months production actually ran: **0.096 restated vs 0.211
+as-run**. April is the outlier (+0.391): the print collapsed 3.3 → 2.8 with AA at 3.27, and the
+−6.7% cap reset justified only −0.088 of it. The live scorecard keeps its as-run values.
 
 ## Sources
 

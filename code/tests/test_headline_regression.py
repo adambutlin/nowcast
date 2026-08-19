@@ -50,26 +50,31 @@ def test_headline_spec_is_frozen(headline):
 
 
 def test_headline_forecast_is_the_shrunk_overlay(headline):
-    """forecast = AA + λ·(0.5·TVP + 0.5·LGBM) + AdminStep, from the reported legs."""
-    expected = (headline["aa"] + 0.5 * (0.5 * headline["tvp_resid"] +
-                                        0.5 * headline["lgbm_resid"])
-                + headline["admin_step"])
-    assert headline["forecast"] == pytest.approx(expected, abs=1e-3)
-    assert headline["tvp_contribution"] == pytest.approx(0.25 * headline["tvp_resid"], abs=1e-3)
-    assert headline["lgbm_contribution"] == pytest.approx(0.25 * headline["lgbm_resid"], abs=1e-3)
+    """forecast = AA + reported leg contributions + RegEvent."""
+    assert headline["forecast"] == pytest.approx(
+        headline["aa"] + headline["tvp_contribution"]
+        + headline["lgbm_contribution"] + headline["reg_event"], abs=1e-3)
+    if not headline["dead_legs"]:                        # full spec, both legs alive
+        assert headline["tvp_contribution"] == pytest.approx(0.25 * headline["tvp_resid"], abs=1e-3)
+        assert headline["lgbm_contribution"] == pytest.approx(0.25 * headline["lgbm_resid"], abs=1e-3)
+    else:                                                # renormalised over the survivors
+        assert set(headline["dead_legs"]) < {"tvp", "lgbm"}   # never both, or there is no overlay
+        live_leg = "lgbm" if "tvp" in headline["dead_legs"] else "tvp"
+        assert headline[f"{live_leg}_contribution"] == pytest.approx(
+            0.5 * headline[f"{live_leg}_resid"], abs=1e-3)
 
 
 def test_headline_targets_the_first_unreleased_month(headline):
     assert headline["nowcast_date"] == str(_first_unreleased(T.HEADLINE))
 
 
-def test_admin_layer_is_headline_only(headline, core):
+def test_reg_event_layer_is_headline_only(headline, core):
     """Core CPI excludes energy by construction, so a cap reset cannot touch it."""
-    assert T.HEADLINE.admin_layer is True and T.CORE.admin_layer is False
-    assert "AdminStep" in headline["spec"] and "AdminStep" not in core["spec"]
-    assert core["admin_step"] == 0.0
-    if headline["admin_step"]:                           # a reset month
-        d = headline["admin_detail"]
+    assert T.HEADLINE.reg_event_layer is True and T.CORE.reg_event_layer is False
+    assert "RegEvent" in headline["spec"] and "RegEvent" not in core["spec"]
+    assert core["reg_event"] == 0.0
+    if headline["reg_event"]:                           # a reset month
+        d = headline["reg_event_detail"]
         assert d["reason"] == "applied" and d["cap_pct"] != 0
 
 

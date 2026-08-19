@@ -1,11 +1,11 @@
 """
 FROZEN PRODUCTION MODEL — UK CPI YoY nowcast.  (2026-06-19)
 
-    Forecast = AA + lambda * Overlay + AdminStep,   Overlay = 0.5*TVP + 0.5*LGBM,  lambda = 0.5
-    => Forecast = AutoARIMA + 0.25*TVP_resid + 0.25*LGBM_resid + AdminStep
+    Forecast = AA + lambda * Overlay + RegEvent,   Overlay = 0.5*TVP + 0.5*LGBM,  lambda = 0.5
+    => Forecast = AutoARIMA + 0.25*TVP_resid + 0.25*LGBM_resid + RegEvent
 
-AdminStep (added 2026-08-19, headline only) is the announced Ofgem price-cap reset priced
-into CPI arithmetically — see production/admin_prices.py. It is zero in the ~3 months out
+RegEvent (added 2026-08-19, headline only) is the announced Ofgem price-cap reset priced
+into CPI arithmetically — see production/reg_events.py. It is zero in the ~3 months out
 of 4 with no reset, and core CPI is ex-energy so it never applies there.
 
 GOVERNANCE: this is the single canonical production forecaster. The research phase is over;
@@ -37,7 +37,7 @@ import numpy as np, pandas as pd
 import lightgbm as lgb
 import uk_model_zoo as Z, two_stage as TS
 import factors as F
-from production import admin_prices as AP
+from production import reg_events as REG
 import validation as V
 from targets import HEADLINE, CORE, Target
 
@@ -56,9 +56,9 @@ def _spec(t: Target) -> str:
     if not t.pinned:
         return f"{t.name} = AutoARIMA (AA-only)"
     w = t.overlay_weights
-    admin = " + AdminStep" if t.admin_layer else ""
-    return (f"AA + {t.lam}*({w['tvp']}*TVP + {w['lgbm']}*LGBM){admin} "
-            f"= AA + {t.lam*w['tvp']:g}*TVP + {t.lam*w['lgbm']:g}*LGBM{admin}")
+    reg = " + RegEvent" if t.reg_event_layer else ""
+    return (f"AA + {t.lam}*({w['tvp']}*TVP + {w['lgbm']}*LGBM){reg} "
+            f"= AA + {t.lam*w['tvp']:g}*TVP + {t.lam*w['lgbm']:g}*LGBM{reg}")
 
 
 def _residual_history(df, target: Target = HEADLINE):
@@ -161,16 +161,32 @@ def nowcast(df=None, live=None, target: Target = HEADLINE):
     tvp_resid = _tvp_resid(df, live, resid, nd)
     lgbm_resid = _lgbm_resid(df, live, resid, nd)
     ow = target.overlay_weights
-    overlay = ow["tvp"] * float(tvp_resid) + ow["lgbm"] * lgbm_resid
-    # Administered-price layer: a cap reset is announced arithmetic, not something
+    # A leg can legitimately fail to produce a number: BaseModel._nowcast_row blocks
+    # the TVP outright when any PINNED factor is past its ffill budget, which happens
+    # routinely to the quarterly uk_quarterly_gdp late in a quarter. Weighting NaN into
+    # the sum turned that into a NaN FORECAST (found on the August-2026 roll). Drop the
+    # dead legs and renormalise over what survives, as two_stage._weighted_combo does
+    # for the backtest; if both legs die the nowcast falls back to AA (+ RegEvent).
+    legs = {"tvp": float(tvp_resid), "lgbm": float(lgbm_resid)}
+    usable = {k: v for k, v in legs.items() if np.isfinite(v)}
+    dead = sorted(set(legs) - set(usable))
+    wsum = sum(ow[k] for k in usable)
+    overlay = sum(ow[k] * v for k, v in usable.items()) / wsum if wsum else 0.0
+    if dead:
+        print(f"[production.nowcast:{target.name}] ⚠ OVERLAY LEG DEAD: {dead} returned no "
+              f"value for {pd.Timestamp(nd).date()} — overlay renormalised over "
+              f"{sorted(usable) or 'nothing (AA only)'}.", file=sys.stderr, flush=True)
+    # Regulatory-event layer: a cap reset is announced arithmetic, not something
     # the overlay can learn from 23 nonzero months. Zero in non-reset months.
-    step, step_detail = (AP.admin_step(nd) if target.admin_layer else (0.0, dict(reason="off")))
+    step, step_detail = (REG.reg_event_step(nd) if target.reg_event_layer else (0.0, dict(reason="off")))
     forecast = float(aa_pred) + target.lam * overlay + step
-    base.update(tvp_resid=round(float(tvp_resid), 3), lgbm_resid=round(lgbm_resid, 3),
-                overlay=round(overlay, 3),
-                tvp_contribution=round(target.lam * ow["tvp"] * float(tvp_resid), 3),
-                lgbm_contribution=round(target.lam * ow["lgbm"] * lgbm_resid, 3),
-                admin_step=round(float(step), 3), admin_detail=step_detail,
+    base.update(tvp_resid=round(legs["tvp"], 3), lgbm_resid=round(legs["lgbm"], 3),
+                overlay=round(overlay, 3), dead_legs=dead,
+                tvp_contribution=round(target.lam * ow["tvp"] * legs["tvp"] / wsum
+                                       if wsum and "tvp" in usable else 0.0, 3),
+                lgbm_contribution=round(target.lam * ow["lgbm"] * legs["lgbm"] / wsum
+                                        if wsum and "lgbm" in usable else 0.0, 3),
+                reg_event=round(float(step), 3), reg_event_detail=step_detail,
                 forecast=round(forecast, 3))
     return base
 
@@ -183,9 +199,9 @@ def _print_block(nc):
     if nc["n_pinned"]:
         print(f"    + TVP     : {nc['tvp_contribution']:+.3f}  (resid {nc['tvp_resid']})")
         print(f"    + LGBM    : {nc['lgbm_contribution']:+.3f}  (resid {nc['lgbm_resid']})")
-        if nc.get("admin_step"):
-            d = nc["admin_detail"]
-            print(f"    + Admin   : {nc['admin_step']:+.3f}  (Ofgem cap {d['cap_pct']:+.2f}%, "
+        if nc.get("reg_event"):
+            d = nc["reg_event_detail"]
+            print(f"    + RegEvent: {nc['reg_event']:+.3f}  (Ofgem cap {d['cap_pct']:+.2f}%, "
                   f"beta {d['beta']}, kappa {d['kappa']})")
         print(f"    FORECAST  : {nc['forecast']}")
         cov = f"{nc['n_live']}/{nc['n_pinned']} PINNED factors live"
@@ -251,7 +267,7 @@ def write_manifest(blocks, path=None):
 def main():
     print("=== PRODUCTION NOWCAST (headline + core) ===")
     try:                       # keep the Ofgem cap series current before anything reads it
-        added = AP.refresh_cap_csv()
+        added = REG.refresh_cap_csv()
         if added:
             print(f"  [ofgem] cap series extended: {added}")
     except Exception as e:

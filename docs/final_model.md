@@ -5,14 +5,17 @@
 
 ## 1. Final architecture
 ```
-Forecast = AA + λ · Overlay        λ = 0.5
+Forecast = AA + λ · Overlay + RegEvent        λ = 0.5
 Overlay  = 0.5·TVP + 0.5·LGBM
-=> Forecast = AutoARIMA + 0.25·TVP_resid + 0.25·LGBM_resid
+RegEvent = κ · β · Ofgem-cap-%                κ = 0.75   (headline only, 0 outside cap resets)
+=> Forecast = AutoARIMA + 0.25·TVP_resid + 0.25·LGBM_resid + RegEvent
 ```
 - **AA** — AutoARIMA on CPI YoY (univariate). The anchor: persistence, seasonality, mean
   reversion, base-effect arithmetic. ≈96% of the level.
 - **TVP** — time-varying-parameter regression on the PINNED factors, predicts the AA residual.
 - **LGBM** — LightGBM on the AA residual over the PINNED factors.
+- **RegEvent** — the announced Ofgem price-cap reset priced into CPI arithmetically
+  (`code/production/reg_events.py`, added 2026-08-19). Zero in the ~3 months in 4 with no reset.
 - Members from `code/uk_model_zoo.py`; factors from `code/factors.py` (PINNED). Entry point:
   `code/production/model.py`.
 
@@ -154,9 +157,9 @@ Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not
     means the overlay extrapolates recent residual momentum. July-2026: LGBM resid −0.046 →
     −0.195 before the other changes below, i.e. it leaned *against* the cap step.
 
-- **2026-08-19 — NEW LAYER: administered prices (headline only).**
-  `Forecast = AA + λ·Overlay + AdminStep`, where `AdminStep = κ·β·cap_pct_change` and
-  `code/production/admin_prices.py` owns the arithmetic. Rationale: the AA residual has RMSE
+- **2026-08-19 — NEW LAYER: regulatory events (headline only).**
+  `Forecast = AA + λ·Overlay + RegEvent`, where `RegEvent = κ·β·cap_pct_change` and
+  `code/production/reg_events.py` owns the arithmetic. Rationale: the AA residual has RMSE
   **0.83 in Ofgem cap-reset months against 0.32 in all other months** — the model's error is
   concentrated in the ~1 month in 4 this layer covers — while the `ofgem_cap_delta` factor
   that was supposed to carry it has **0.0% LightGBM gain** (nonzero in 23 of 306 months) and
@@ -172,8 +175,8 @@ Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not
     on the longer window (MIN_PRIOR=4) **0.796 → 0.655 (rel 0.824)**. Better in 7/11 and
     10/15 reset months. κ=1.0 wins marginally on the strict window and loses on the long one
     (the 2022 crisis reset overshoots by −1.23), so the haircut buys crisis-month safety.
-  - **Scope:** HEADLINE only (`Target.admin_layer`). Core CPI is ex-energy by construction.
-  - **Data:** `data/ofgem_cap.csv` is now maintained by `admin_prices.refresh_cap_csv()`,
+  - **Scope:** HEADLINE only (`Target.reg_event_layer`). Core CPI is ex-energy by construction.
+  - **Data:** `data/ofgem_cap.csv` is now maintained by `reg_events.refresh_cap_csv()`,
     which rebuilds each quarter's bill from Ofgem's published unit rates at a FIXED
     consumption basis. Ofgem re-based its TDCV in July 2026 (£1,862 old basis vs £1,663 new);
     a level series that switches basis mid-stream invents a step, so only fixed-basis ratios
@@ -193,6 +196,49 @@ Changes ratified after the 2026-06-19 freeze. Each is a governance decision, not
   with the nowcast, the factor row the overlays saw, per-factor source status and last
   observation, and the git SHA. The July post-mortem could not reconstruct the inputs exactly,
   because the factor matrix is fetched live and moves continuously.
+
+- **2026-08-19 — Renamed AdminStep → RegEvent.** The layer covers regulatory/administered
+  events generally (today: the Ofgem cap; the same arithmetic would carry a VAT change or a
+  fuel-duty move), so it is named for the class of event rather than for prices.
+  `production/admin_prices.py` → `production/reg_events.py`, `admin_step()` →
+  `reg_event_step()`, `Target.admin_layer` → `Target.reg_event_layer`, nowcast keys
+  `admin_step`/`admin_detail` → `reg_event`/`reg_event_detail`. Behaviour unchanged.
+
+- **2026-08-19 — BUG FIX: a dead overlay leg produced a NaN forecast.** `BaseModel._nowcast_row`
+  blocks a model outright when any PINNED factor is past its ffill budget (`pub_lag + 2`), and
+  the TVP then returns NaN. `nowcast()` weighted that NaN into the overlay sum, so the whole
+  headline forecast came back NaN — hit on the August-2026 roll, where the quarterly
+  `uk_quarterly_gdp` (last observation 2026-Q1) exceeded its budget. Dead legs are now dropped
+  and the overlay renormalised over the survivors (the convention `two_stage._weighted_combo`
+  already used for backtests); with both legs dead the nowcast falls back to AA + RegEvent.
+  Reported as `dead_legs` and printed loudly. August-2026 headline: NaN → **2.843**, TVP dead,
+  LGBM at full overlay weight.
+  - **Follow-up needed:** a quarterly factor in a monthly PINNED set will keep killing the TVP
+    late in every quarter. Either widen the ffill budget for `uk_quarterly_gdp` or reconsider
+    its place in the pinned set — a governance question, not a code fix.
+
+- **2026-08-19 — Restatement of Apr–Jul 2026 through the current pipeline.**
+  `code/production/restate.py <YYYY-MM> …` re-runs a past reference month by truncating the
+  target series to the month before and calling `nowcast()` unchanged. NOT a vintage replay:
+  factor values are today's, so revisions are baked in. The RegEvent layer is honest by
+  construction (β fitted on resets strictly before the target month) and the overlays only
+  train on residuals up to the truncation, but a restated number is "what the current code
+  makes of today's data", not what would have printed at the time. The live scorecard keeps
+  its as-run values.
+
+  | month | AA | TVP | LGBM | RegEvent | restated | as-run | actual | err new | err old |
+  |---|---|---|---|---|---|---|---|---|---|
+  | 2026-04 | 3.270 | −0.006 | +0.015 | **−0.088** | 3.191 | — | 2.80 | +0.391 | — |
+  | 2026-05 | 2.710 | +0.064 | −0.007 | 0 | 2.767 | 2.910 | 2.80 | −0.033 | +0.110 |
+  | 2026-06 | 2.726 | +0.025 | −0.055 | 0 | 2.697 | 2.683 | 2.60 | +0.097 | +0.083 |
+  | 2026-07 | 2.516 | +0.058 | +0.017 | **+0.178** | 2.768 | 2.562 | 2.90 | −0.132 | −0.338 |
+
+  Headline RMSE over the three months production actually ran: **0.096 restated vs 0.211
+  as-run**. Core: 0.137 vs 0.128 over its two scored months — the layer never touches core, so
+  that difference is the TVP month fix plus the unpurged live path, and it is marginally worse.
+  April is the outlier for both (+0.39 / +0.63): the print collapsed 3.3 → 2.8 while AA sat at
+  3.27, and a −6.7% cap reset only justified −0.088 of the gap. **n=4. This is corroboration,
+  not evidence** — the layer's case rests on the 15-reset walk-forward above.
 
 - **2026-08-19 — New candidate factor: `uk_pump_price`.** DESNZ weekly road-fuel prices
   (mean of ULSP/ULSD), monthly MEAN, pub_lag=0. The direct CPI motor-fuel input: its monthly
