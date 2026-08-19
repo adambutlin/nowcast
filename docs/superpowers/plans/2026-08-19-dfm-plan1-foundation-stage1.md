@@ -24,6 +24,8 @@ From `docs/CLAUDE.md`, these are not optional:
 
 Throughout this plan, `$Q` means `/opt/anaconda3/envs/quant/bin/python` and every run command assumes `PYTHONPATH=code` from the repo root `/Users/Adam/Documents/home/quant/nowcast`.
 
+**Committing under `data/`.** `.gitignore:8` ignores `data/` wholesale, and the seven files currently tracked there were force-added — that is this repo's convention, so the plan follows it rather than rewriting the ignore rules. Result artefacts are committed with `git add -f`; the refetchable `data/dfm/daily/` cache and the `data/dfm/checkpoints/` intermediates are **never** committed.
+
 Set it up once per shell:
 
 ```bash
@@ -1085,7 +1087,8 @@ Expected: a coverage table plus a line like `CPI bulletin: 128/139 real ONS date
 - [ ] **Step 7: Commit**
 
 ```bash
-git add code/dfm/panel.py code/tests/test_dfm_panel.py data/dfm/release_calendar.csv
+git add code/dfm/panel.py code/tests/test_dfm_panel.py
+git add -f data/dfm/release_calendar.csv    # data/ is gitignored; -f matches how this repo already tracks data/*.csv
 git commit -m "feat(dfm): panel series specs, 6-block map, and the built release calendar"
 ```
 
@@ -3052,7 +3055,8 @@ Expected: AA RMSE near **0.467** and rel-RMSE near **0.89** (README model table)
 - [ ] **Step 6: Commit**
 
 ```bash
-git add code/dfm/benchmarks.py code/tests/test_dfm_benchmarks.py data/dfm/production_replication.csv
+git add code/dfm/benchmarks.py code/tests/test_dfm_benchmarks.py
+git add -f data/dfm/production_replication.csv
 git commit -m "feat(dfm): AutoARIMA, AR(1) and frozen-production replication benchmarks"
 ```
 
@@ -3314,7 +3318,8 @@ Whichever fallback is applied gets recorded in `docs/dfm_backtest.md` in Task 15
 - [ ] **Step 3: Commit the measurement**
 
 ```bash
-git add data/dfm/timing_probe_E1.json code/dfm/config.py
+git add code/dfm/config.py
+git add -f data/dfm/timing_probe_E1.json
 git commit -m "perf(dfm): record the E1 timing probe and set the draw budget"
 ```
 
@@ -3439,7 +3444,8 @@ Expected: `exit=1`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/dfm_backtest.md data/dfm/stage1_summary.csv data/dfm/backtest_E1_standalone.csv
+git add docs/dfm_backtest.md
+git add -f data/dfm/stage1_summary.csv data/dfm/backtest_E1_standalone.csv
 git commit -m "test(dfm): Stage 1 walk-forward results and the stage gate write-up"
 ```
 
