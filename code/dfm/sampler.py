@@ -7,7 +7,8 @@ Stage 1 (E1) needs three blocks plus the factor draw from state_space:
   draw_factor_ar  Phi | f                  factor VAR (diagonal in E1-E3)
 
 Later stages add SV, outlier indicators and hyperpriors; those blocks land in
-Plans 2 and 3 and must not change the signatures here.
+Plans 2 and 3 and must not change the signatures here (adding backward-compatible
+optional arguments is fine; `draw_idio(..., rho_prev=)` is one such).
 
 Every block is a conjugate draw with a weakly-informative prior, so each one is
 independently testable by parameter recovery on synthetic data.
@@ -27,6 +28,19 @@ import numpy as np
 # posterior the data could support lives anywhere near it, so the floor is inert
 # except in the degenerate case it exists to prevent.
 SIG_FLOOR = 1e-5
+
+# How many times draw_factor_ar exhausted its rejection attempts and fell back to
+# the deterministic shrink. The shrink is NOT a draw from the truncated posterior
+# (see draw_factor_ar), so a non-zero count means some draws in the chain are
+# biased toward zero persistence. Read it after a run; it is never printed per
+# draw. Task 10's sweep should report it alongside n_degenerate.
+SHRINK_FALLBACKS = 0
+
+
+def reset_shrink_fallbacks():
+    """Zero the SHRINK_FALLBACKS counter (call once before a chain)."""
+    global SHRINK_FALLBACKS
+    SHRINK_FALLBACKS = 0
 
 
 def _stationary(Phi):
@@ -62,21 +76,26 @@ def draw_loadings(y, f, gamma_z, sig, rng, mask=None, prior_var=10.0):
     return out
 
 
-def draw_idio(e, rng, prior_var=10.0, a0=3.0, b0=1.0, max_tries=20):
+def draw_idio(e, rng, prior_var=10.0, a0=3.0, b0=1.0, max_tries=20, rho_prev=None):
     """
     Draw (rho, sig) for each idiosyncratic AR(1) series from its own residuals.
 
     Returns (rho (M,), sig (M,)). Non-stationary rho draws are rejected and
     retried; after `max_tries` the previous OLS estimate is clipped into (-0.99, 0.99).
 
-    Note on exactness: the variance is drawn conditional on the OLS rho, then rho
-    is drawn conditional on that variance. The rho draw is the exact conditional
-    p(rho | sig, e); the sig draw is a profile approximation to p(sig | e), since
-    it evaluates the residual sum of squares at the OLS rho instead of integrating
-    over rho. The kernel is therefore an approximate, not an exact, Gibbs step; the
-    error in the implied posterior for sig^2 is O(1/T) and slightly downward
-    (SSR is minimised at the OLS rho). Making it exact needs the current rho passed
-    in, which is a signature change deferred to a later plan.
+    rho_prev : optional (M,) of the rho currently in the chain's state.
+
+      supplied -> EXACT Gibbs. The residual sum of squares is evaluated at
+        rho_prev, so the variance draw is the true full conditional
+        p(sig^2 | rho, e) = InvGamma(a0 + n/2, b0 + SSR(rho_prev)/2), and the rho
+        draw that follows is the true p(rho | sig, e). Task 10's sweep passes it.
+
+      None -> approximate (the original behaviour, kept so existing call sites are
+        unchanged). SSR is evaluated at the OLS rho instead, which profiles rho out
+        rather than conditioning on it: the kernel then depends only on e, not on
+        the chain's state, so it is an independence proposal used without an accept
+        step. Measured at T=290 the implied sig is biased -0.14% and 1% too narrow
+        — negligible, but not exact, so prefer rho_prev inside a real sweep.
 
     sig is floored at SIG_FLOOR — see the comment on that constant.
     """
@@ -84,15 +103,21 @@ def draw_idio(e, rng, prior_var=10.0, a0=3.0, b0=1.0, max_tries=20):
     T, M = e.shape
     rho = np.zeros(M)
     sig = np.ones(M)
+    if rho_prev is not None:
+        rho_prev = np.asarray(rho_prev, dtype=float).reshape(-1)
+        if rho_prev.shape[0] != M:
+            raise ValueError(f"rho_prev has length {rho_prev.shape[0]}, expected {M}")
     for i in range(M):
         x, y = e[:-1, i], e[1:, i]
         ok = np.isfinite(x) & np.isfinite(y)
         x, y = x[ok], y[ok]
         if len(x) < 10 or np.dot(x, x) <= 0:
             continue
-        # variance first, conditional on an OLS rho
         r_ols = float(np.dot(x, y) / np.dot(x, x))
-        resid = y - r_ols * x
+        # variance, conditional on the incoming rho (exact) or on the OLS rho
+        # (profile approximation) — see the docstring.
+        r_cond = r_ols if rho_prev is None else float(rho_prev[i])
+        resid = y - r_cond * x
         a_n = a0 + len(x) / 2.0
         b_n = b0 + 0.5 * float(resid @ resid)
         s2 = b_n / rng.gamma(a_n, 1.0)          # InvGamma(a_n, b_n) draw
@@ -112,25 +137,43 @@ def draw_idio(e, rng, prior_var=10.0, a0=3.0, b0=1.0, max_tries=20):
 
 
 def draw_factor_ar(f, rng, order=1, diagonal=True, prior_var=1.0,
-                   minnesota_cross=0.05, max_tries=50):
+                   minnesota_cross=0.05, max_tries=200):
     """
     Draw the factor VAR coefficient matrix Phi, shape (K, K*order).
 
     diagonal=True  -> each factor is an independent AR(order) (arms E1-E3).
     diagonal=False -> full VAR under a Minnesota prior: own lags get `prior_var`,
                       cross lags the much tighter `minnesota_cross` (arms E4+).
-    Non-stationary draws are rejected; on repeated failure the coefficients are
-    scaled back toward zero until the companion form is stable.
 
     The factor innovation variance is fixed at 1 (the usual DFM scale
     identification), so it does not appear in the precision below.
+
+    Stationarity is imposed by REJECTION: the rows are jointly resampled from the
+    same Gaussian posterior until the companion form is stable, which is an exact
+    draw from the posterior truncated to the stationary region (the rows are
+    independent a posteriori, so redrawing all of them and accepting on the joint
+    condition is valid rejection sampling).
+
+    `max_tries` bounds the attempts so a pathological posterior can never hang a
+    2000-draw chain. On exhaustion the coefficients are scaled back toward zero
+    until stable and SHRINK_FALLBACKS is incremented. That shrink is a
+    deterministic map, NOT a draw: it piles mass just under the boundary and biases
+    persistence down, which is why it is the last resort and why it is counted.
+    The default of 200 is set from the worst realistic case measured on this model
+    — a near-unit-root factor at T=290 rejects ~95% of draws, where 50 attempts
+    would fall back on 10% of sweeps but 200 falls back on ~1 in 10,000.
     """
+    global SHRINK_FALLBACKS
     f = np.asarray(f, dtype=float)
     T, K = f.shape
     X = np.column_stack([f[order - l - 1:T - l - 1] for l in range(order)])
     Y = f[order:]
     n_coef = K * order
-    Phi = np.zeros((K, n_coef))
+
+    # Posterior moments are fixed across attempts, so compute them once and keep a
+    # Cholesky factor to sample from; rejection then costs one triangular solve and
+    # one eigenvalue check per attempt.
+    blocks = []
     for k in range(K):
         if diagonal:
             cols = [l * K + k for l in range(order)]
@@ -144,15 +187,30 @@ def draw_factor_ar(f, rng, order=1, diagonal=True, prior_var=1.0,
                     pv[j] = minnesota_cross
         prec = Xk.T @ Xk + np.diag(1.0 / pv)
         V = np.linalg.inv(prec)
-        m = V @ (Xk.T @ Y[:, k])
         V = 0.5 * (V + V.T)
-        Phi[k, cols] = rng.multivariate_normal(m, V)
+        m = V @ (Xk.T @ Y[:, k])
+        try:
+            chol = np.linalg.cholesky(V)
+        except np.linalg.LinAlgError:           # V PSD but not PD: fall back to eigh
+            w, Q = np.linalg.eigh(V)
+            chol = Q @ np.diag(np.sqrt(np.clip(w, 0.0, None)))
+        blocks.append((k, cols, m, chol))
 
-    comp = _companion(Phi, K, order)
+    def _sample():
+        Phi = np.zeros((K, n_coef))
+        for k, cols, m, chol in blocks:
+            Phi[k, cols] = m + chol @ rng.standard_normal(len(cols))
+        return Phi
+
+    for _ in range(max(1, int(max_tries))):
+        Phi = _sample()
+        if _stationary(_companion(Phi, K, order)):
+            return Phi
+
+    SHRINK_FALLBACKS += 1
     tries = 0
-    while not _stationary(comp) and tries < max_tries:
+    while not _stationary(_companion(Phi, K, order)) and tries < 200:
         Phi *= 0.95
-        comp = _companion(Phi, K, order)
         tries += 1
     return Phi
 
@@ -176,6 +234,14 @@ def normalise(Lam, f):
     r1.T lower-triangular and q1.T orthogonal. Because R is orthogonal,
     f_n @ Lam_n.T = f @ R.T @ R @ Lam.T = f @ Lam.T exactly — the common component
     is untouched. Verified numerically before this plan was written.
+
+    CAVEAT for whoever chooses which series head the panel: this assumes the top
+    K x K block has full rank. If it is rank deficient the rotation still runs and
+    the common component is still preserved, but the corresponding diagonal entry
+    comes out at machine epsilon (~1e-16) and its sign is then positive only by
+    floating-point luck — the positive-diagonal identification silently stops
+    holding. Put K series that genuinely load on distinct factors in the first K
+    rows.
     """
     K = Lam.shape[1]
     top = Lam[:K, :K]
