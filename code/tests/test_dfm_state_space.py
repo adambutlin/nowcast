@@ -85,6 +85,54 @@ class TestFilter:
         assert abs(ours - ref) / abs(ref) < 1e-6
 
 
+    def test_structured_fast_path_matches_the_general_dense_core(self, sim):
+        """The Z-sparsity fast path must reproduce the general filter exactly."""
+        y = sim["y"].copy()
+        y[30:40, 2] = np.nan
+        y[77, :] = np.nan
+        K, M = sim["K"], sim["M"]
+        T = SS.transition_matrix(sim["Phi"], sim["rho"])
+        Q = SS.state_cov(np.eye(K), sim["sig"], K, M)
+        Z = SS.design_matrix(sim["Lam"], K, M)
+        a0, P0 = SS._initial_state(T, Q, T.shape[0])
+        fast = SS._run_filter(y, Z, T, Q, a0, P0)
+        dense = SS._filter_core(y, Z, T, Q, a0, P0)
+        assert abs(fast[2] - dense[2]) / abs(dense[2]) < 1e-12
+        assert np.abs(fast[0] - dense[0]).max() < 1e-10
+        assert np.abs(fast[1] - dense[1]).max() < 1e-10
+
+    def test_non_canonical_design_falls_back_to_the_dense_core(self, sim):
+        """A Z loading on lagged factors must not take the structured path."""
+        K, M = sim["K"], sim["M"]
+        Z = SS.design_matrix(sim["Lam"], K, M)
+        Z[0, K] = 0.5                       # series 0 now loads on f_{t-1}
+        T = SS.transition_matrix(sim["Phi"], sim["rho"])
+        Q = SS.state_cov(np.eye(K), sim["sig"], K, M)
+        a0, P0 = SS._initial_state(T, Q, T.shape[0])
+        got = SS._run_filter(sim["y"], Z, T, Q, a0, P0)
+        want = SS._filter_core(sim["y"], Z, T, Q, a0, P0)
+        assert got[2] == want[2]            # bit-identical: same code path
+        assert np.array_equal(got[0], want[0])
+
+    def test_degenerate_updates_are_counted_not_silently_dropped(self, sim):
+        """A collapsed forecast variance skips the update; the count says so."""
+        out = SS.kalman_filter(sim["y"], sim["Lam"], np.eye(sim["K"]),
+                               sim["Phi"], sim["rho"], sim["sig"])
+        assert out["n_degenerate"] == 0
+
+        # Two series with identical loadings and no idiosyncratic variance: the
+        # second carries no information once the first has been applied.
+        Lam = np.array([[1.0], [1.0]])
+        Z = SS.design_matrix(Lam, 1, 2)
+        T = SS.transition_matrix(np.array([[0.5]]), np.zeros(2))
+        Q = SS.state_cov(np.eye(1), np.zeros(2), 1, 2)
+        a0 = np.zeros(4)
+        P0 = np.diag([1.0, 1.0, 0.0, 0.0])
+        y = np.array([[1.0, 1.0]])
+        assert SS._run_filter(y, Z, T, Q, a0, P0)[3] == 1        # structured path
+        assert SS._filter_core(y, Z, T, Q, a0, P0)[3] == 1       # dense path
+
+
 class TestSimulationSmoother:
     def test_draws_recover_the_true_factor_path(self, sim):
         rng = np.random.default_rng(11)
