@@ -1041,7 +1041,350 @@ git commit -m "test(dfm): Stage 2b — E3 robust innovations results and the Sta
 
 ---
 
-## Task 9: Regression-check the whole suite and production isolation
+## Task 9: Extension — the Targeted DFM
+
+**Bai & Ng (2008), "Forecasting economic time series using targeted predictors."** Instead of
+extracting factors from all 32 series, first screen each series for predictive relevance to the
+target, then extract factors from only the survivors. The premise is that a factor extracted from a
+panel containing many irrelevant series is contaminated by variation that has nothing to do with
+what you are forecasting.
+
+**Why it belongs in Stage 2 rather than Plan 3.** It attacks the same diagnosed failure. E1's overlay
+leg had the *worst* correlation with the true residual (+0.269) and the *largest* amplitude
+(sd 0.600 vs true 0.455) — it fitted factors to everything in the panel and then projected that
+common variation onto a target most of it had no bearing on. Targeting is a direct mechanism for that
+specific pathology, and it is orthogonal to SV and outliers: it changes *which series* the factors
+come from, not how their innovations are distributed. So it composes with any arm as a modifier
+rather than sitting on the E1→E6 ladder.
+
+### Two design decisions, made explicitly
+
+**1. The screen must be recursive, and it must be causal.** A one-shot screen on the full sample is
+exactly the look-ahead bias this project exists to avoid. The repo already has the right precedent —
+README describes the production factor screen as "SHAP pre-2015 screen (look-ahead-free: screens on
+pre-backtest data only)".
+
+The clean place for it is **inside `DFMNowcaster.fit`**, not in `walk_forward`. `fit` already receives
+the training panel with the test month's target blanked and purge/embargo applied, so a screen
+computed there sees exactly the information the model is allowed to see — causal by construction
+rather than by argument. It also re-runs every month for free, which is what "recursive" requires.
+
+**2. Screening interacts with the block structure, and that interaction must be handled.** Spec §1.6
+gives every block 3–8 members precisely so each block factor is identified by at least three series.
+An unconstrained screen can gut a block — if it keeps one energy series, the energy factor is not
+identified and `K = 7` becomes a lie.
+
+Rule: rank globally by `|t|`, then enforce `min_per_block = 3`. A block that cannot reach three
+survivors is **dropped entirely** and `K` reduced by one for that fold, rather than kept in name with
+too few series. The number of factors therefore varies across folds. That is legitimate — it follows
+from the information available at that point — but it must be recorded per fold and reported, never
+left implicit.
+
+### The honest risk, stated before running
+
+The AA+RegEvent residual is documented as **~79% noise** (predictive R² ≈ 0.21). Screening on a
+low-signal target with 32 candidates can easily select noise, and the chosen set may churn month to
+month. If it does, targeting will not help and may hurt: a factor extracted from a set that changes
+every month is not a stable factor.
+
+**That churn is itself a deliverable**, whichever way RMSE goes. Selection stability is measured and
+reported regardless of outcome.
+
+**Files:**
+- Create: `code/dfm/screen.py`
+- Modify: `code/dfm/model.py` (a `targeted` modifier on `DFMConfig`, applied in `fit`)
+- Test: `code/tests/test_dfm_screen.py`, and append to `code/tests/test_dfm_model.py`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `code/tests/test_dfm_screen.py`:
+
+```python
+"""Targeted-predictor screening (Bai & Ng 2008)."""
+import sys, os
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dfm import screen as S
+
+
+def _panel(T=200, seed=0):
+    """Six series: s0/s1 genuinely drive the target, s2..s5 are pure noise."""
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2005-01-31", periods=T, freq="ME")
+    driver = rng.standard_normal(T)
+    df = pd.DataFrame({
+        "s0": driver + rng.standard_normal(T) * 0.3,
+        "s1": driver * -0.8 + rng.standard_normal(T) * 0.3,
+        "s2": rng.standard_normal(T),
+        "s3": rng.standard_normal(T),
+        "s4": rng.standard_normal(T),
+        "s5": rng.standard_normal(T),
+    }, index=idx)
+    df["y"] = driver * 1.5 + rng.standard_normal(T) * 0.5
+    return df
+
+
+def _blocks():
+    return {"s0": "a", "s1": "a", "s2": "a", "s3": "b", "s4": "b", "s5": "b"}
+
+
+class TestTStats:
+    def test_relevant_series_score_higher_than_noise(self):
+        df = _panel()
+        t = S.screen_tstats(df.drop(columns="y"), df["y"])
+        assert min(abs(t["s0"]), abs(t["s1"])) > max(abs(t[c]) for c in ["s2", "s3", "s4", "s5"])
+
+    def test_ignores_rows_where_the_target_is_missing(self):
+        df = _panel()
+        blanked = df.copy()
+        blanked.loc[blanked.index[-30:], "y"] = np.nan
+        t = S.screen_tstats(blanked.drop(columns="y"), blanked["y"])
+        assert np.all(np.isfinite(t.values))
+
+    def test_a_series_with_no_overlap_scores_zero_not_nan(self):
+        df = _panel()
+        df["dead"] = np.nan
+        t = S.screen_tstats(df.drop(columns="y"), df["y"])
+        assert t["dead"] == 0.0
+
+
+class TestSelect:
+    def test_keeps_the_relevant_series(self):
+        df = _panel()
+        keep, _ = S.select(df.drop(columns="y"), df["y"], _blocks(), top_m=3, min_per_block=0)
+        assert "s0" in keep and "s1" in keep
+
+    def test_respects_top_m(self):
+        df = _panel()
+        keep, _ = S.select(df.drop(columns="y"), df["y"], _blocks(), top_m=2, min_per_block=0)
+        assert len(keep) == 2
+
+    def test_drops_a_block_that_cannot_reach_the_floor(self):
+        df = _panel()
+        keep, dropped = S.select(df.drop(columns="y"), df["y"], _blocks(),
+                                 top_m=2, min_per_block=3)
+        assert "b" in dropped
+        assert not any(_blocks()[k] == "b" for k in keep)
+
+    def test_a_surviving_block_keeps_at_least_the_floor(self):
+        df = _panel()
+        keep, _ = S.select(df.drop(columns="y"), df["y"], _blocks(), top_m=4, min_per_block=3)
+        for b in set(_blocks()[k] for k in keep):
+            assert sum(1 for k in keep if _blocks()[k] == b) >= 3
+
+    def test_selection_is_deterministic(self):
+        df = _panel()
+        a, _ = S.select(df.drop(columns="y"), df["y"], _blocks(), top_m=3, min_per_block=0)
+        b, _ = S.select(df.drop(columns="y"), df["y"], _blocks(), top_m=3, min_per_block=0)
+        assert a == b
+
+    def test_is_causal_future_rows_cannot_change_it(self):
+        """Poisoning rows after the cut must not change a selection made on the past."""
+        df = _panel(T=250)
+        past = df.iloc[:150]
+        a, _ = S.select(past.drop(columns="y"), past["y"], _blocks(), top_m=3, min_per_block=0)
+        poisoned = df.copy()
+        poisoned.iloc[150:, :6] = 1e6
+        b, _ = S.select(poisoned.iloc[:150].drop(columns="y"), poisoned.iloc[:150]["y"],
+                        _blocks(), top_m=3, min_per_block=0)
+        assert a == b
+```
+
+- [ ] **Step 2: Run and confirm the missing-module failure**
+
+```bash
+PYTHONPATH=code $Q -m pytest code/tests/test_dfm_screen.py -q
+```
+
+- [ ] **Step 3: Implement**
+
+Create `code/dfm/screen.py`:
+
+```python
+"""
+dfm/screen.py — targeted predictor screening (Bai & Ng 2008).
+
+Extract factors from the series that predict the target, not from everything. A
+factor taken from a panel full of irrelevant series carries variation that has
+nothing to do with the forecast, which is a plausible mechanism for Stage 1's
+central failure: E1's overlay leg had the worst correlation with the true
+residual (+0.269) yet the largest amplitude (sd 0.600 against a true 0.455).
+
+Hard thresholding rather than LARS/elastic-net soft thresholding: with 32
+candidates it is exact, needs no tuning path, and is legible — the selected set
+can be read and argued with each month, which matters more here than squeezing
+the last of the selection accuracy.
+
+CAUSALITY. Called from DFMNowcaster.fit, which only ever receives the training
+panel with the test month's target blanked and purge/embargo already applied. The
+screen therefore sees exactly what the model may see, by construction rather than
+by argument, and re-runs every walk-forward month — which is what makes it
+recursive.
+"""
+import numpy as np
+import pandas as pd
+
+
+def screen_tstats(X, y):
+    """|t| of the slope from a univariate OLS of `y` on each column of `X`.
+
+    A series with too little overlap scores 0.0 rather than NaN, so a dead or
+    not-yet-started series is simply never selected instead of poisoning the
+    ranking with a missing value.
+    """
+    y = pd.Series(y).astype(float)
+    out = {}
+    for c in X.columns:
+        x = pd.Series(X[c]).astype(float)
+        ok = x.notna() & y.notna()
+        n = int(ok.sum())
+        if n < 12:
+            out[c] = 0.0
+            continue
+        xv, yv = x[ok].to_numpy(), y[ok].to_numpy()
+        xc, yc = xv - xv.mean(), yv - yv.mean()
+        sxx = float(xc @ xc)
+        if sxx <= 0:
+            out[c] = 0.0
+            continue
+        beta = float(xc @ yc) / sxx
+        resid = yc - beta * xc
+        s2 = float(resid @ resid) / max(n - 2, 1)
+        se = float(np.sqrt(s2 / sxx)) if s2 > 0 else 0.0
+        out[c] = abs(beta / se) if se > 0 else 0.0
+    return pd.Series(out)
+
+
+def select(X, y, blocks, top_m=16, min_per_block=3, t_floor=0.0):
+    """
+    Choose the targeted subset. Returns (keep, dropped_blocks).
+
+    Series are ranked globally by |t| and the top `top_m` above `t_floor` are
+    provisionally kept. The block floor is then enforced: a block with at least
+    `min_per_block` eligible candidates is topped back up to that many by |t|; a
+    block that cannot reach it is dropped entirely and reported, because a block
+    factor identified by one or two series is not identified at all (spec §1.6).
+    """
+    t = screen_tstats(X, y).sort_values(ascending=False)
+    eligible = t[t > t_floor]
+    keep = list(eligible.index[:top_m])
+
+    by_block = {}
+    for name in X.columns:
+        by_block.setdefault(blocks.get(name), []).append(name)
+
+    dropped_blocks = []
+    if min_per_block > 0:
+        for b in by_block:
+            if b is None:
+                continue
+            chosen = [k for k in keep if blocks.get(k) == b]
+            if len(chosen) >= min_per_block:
+                continue
+            pool = [m for m in eligible.index if blocks.get(m) == b]
+            if len(pool) >= min_per_block:
+                for m in pool[:min_per_block]:
+                    if m not in keep:
+                        keep.append(m)
+            else:
+                dropped_blocks.append(b)
+                keep = [k for k in keep if blocks.get(k) != b]
+
+    keep = [c for c in X.columns if c in set(keep)]        # stable panel order
+    return keep, sorted(dropped_blocks)
+```
+
+- [ ] **Step 4: Wire it into the model**
+
+Add `targeted: bool = False`, `top_m: int = 16` and `min_per_block: int = 3` to `DFMConfig` — a
+**modifier**, not a new arm, so it composes with E1, E2 or E3. In `fit`, before building the state
+space:
+
+```python
+if cfg.targeted:
+    obs_cols = [c for c in panel.columns if c != target]
+    keep, dropped = SCR.select(panel[obs_cols], panel[target], PANEL_BLOCKS,
+                               top_m=cfg.top_m, min_per_block=cfg.min_per_block)
+    self.selected, self.dropped_blocks = keep, dropped
+    k_eff = cfg.k_factors - len(dropped)     # global factor + one per surviving block
+    panel = panel[keep + [target]]
+else:
+    self.selected, self.dropped_blocks = list(panel.columns), []
+    k_eff = cfg.k_factors
+```
+
+Use `k_eff` for the state dimension, and record `selected` / `dropped_blocks` in the diagnostics so
+`walk_forward` can collect them per fold. Plan 1 made the warm start **name-aligned**, so a panel
+whose width changes between folds is already handled — a series entering the selection keeps its
+cold-start value instead of inheriting a position-neighbour's loadings.
+
+Append to `code/tests/test_dfm_model.py`:
+
+```python
+class TestTargeted:
+    def test_targeted_composes_with_any_arm(self):
+        for arm in ["E1", "E2", "E3"]:
+            cfg = DFMConfig(arm=arm, targeted=True, top_m=10)
+            assert cfg.targeted and cfg.top_m == 10
+
+    def test_targeted_fit_reduces_the_panel_and_records_the_selection(self):
+        df = synthetic_panel(T=200, M=12, ragged=False)
+        cfg = DFMConfig(arm="E1", k_factors=2, factor_order=1, draws=100, burn=50,
+                        seed=1, targeted=True, top_m=5, min_per_block=0)
+        m = DFMNowcaster(cfg).fit(df, target="cpi_mom")
+        assert len(m.selected) == 5
+        assert np.isfinite(m.nowcast(df, target="cpi_mom")["mean"])
+
+    def test_untargeted_is_unchanged(self):
+        df = synthetic_panel()
+        cfg = DFMConfig(arm="E1", k_factors=2, factor_order=1, draws=100, burn=50, seed=1)
+        m = DFMNowcaster(cfg).fit(df, target="cpi_mom")
+        assert len(m.selected) == len(df.columns)
+```
+
+- [ ] **Step 5: Run the tests**
+
+```bash
+PYTHONPATH=code $Q -m pytest code/tests/test_dfm_screen.py code/tests/test_dfm_model.py -q
+```
+
+Expected: all pass, every existing E1/E2/E3 test unchanged.
+
+- [ ] **Step 6: Run the targeted variant of the best Stage 2 arm**, in both modes, tagged
+`<arm>_targeted_<mode>`. Use whichever of E1/E2/E3 scored best — if E3 won, run `E3 + targeted`.
+
+- [ ] **Step 7: Report the selection diagnostics** — these matter as much as the RMSE
+
+- **Selection frequency**: how often each of the 32 series is chosen across the 120 folds. Chosen in
+  5% of folds is noise; 95% is a genuine predictor. Compare the stable survivors against production's
+  own PINNED set — `uk_ppi_input` and `deep_sea_freight` earned their place in the production factor
+  race, so targeting rediscovering them independently is real corroboration, and never picking them
+  is a substantive disagreement that needs explaining.
+- **Churn**: mean Jaccard distance between consecutive folds' selections.
+- **Blocks dropped, and how often** — including whether the `food` block, the only genuinely new
+  information channel versus production (spec §1.6), survives screening at all.
+- The three Stage 2 targets again: overlay leg sd ratio (E1: 1.32), the 2022-11 error (E1: +2.856
+  against −0.215), shock-window overlay RMSE (E1: 1.3049).
+
+- [ ] **Step 8: Write the targeting section and commit**
+
+Apply spec §7 unchanged. State plainly whether targeting helped, and read churn honestly: if
+selection is unstable **and** RMSE improved, treat that as suspicious rather than as a win — it is
+the profile of a screen that has found an in-sample artefact.
+
+```bash
+git add code/dfm/screen.py code/dfm/model.py code/tests/test_dfm_screen.py \
+        code/tests/test_dfm_model.py docs/dfm_backtest.md
+git add -f data/dfm/backtest_*_targeted_*.csv data/dfm/selection_frequency.csv
+git commit -m "feat(dfm): targeted predictor screening (Bai-Ng) and its Stage 2 results"
+```
+
+---
+
+## Task 10: Regression-check the whole suite and production isolation
 
 - [ ] **Step 1**
 
@@ -1090,6 +1433,7 @@ Measure before committing (Task 4). If the total exceeds ~8 h, apply spec §5.3 
 | §6.3 DM, calm overshoot, error correlation | 5, 8 |
 | §7 selection rule applied as written | 8 step 4 |
 | §8 `plots/dfm/outlier_prob.png` | 8 step 3 |
-| Non-goal: production untouched | 9 |
+| Targeted DFM (Bai-Ng), recursive causal screen | 9 |
+| Non-goal: production untouched | 10 |
 
 **Deliberately out of scope**, carried to Plan 3: E4 (full VAR under the Minnesota prior — the `draw_factor_ar(diagonal=False)` path already exists and is tested but is not wired to an arm), E5 (block-restricted + spike-and-slab loadings), E6 (hierarchical shrinkage), the exogenous reg block `gamma_z`, and the RegEvent-inclusive production benchmark variant the overlay comparison needs. Plan 4 keeps the news decomposition, parameter stability, the T-30 → R-1 origin ladder, ablations and the model card.

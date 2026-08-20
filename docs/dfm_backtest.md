@@ -9,6 +9,29 @@ Each stage appends one section. A stage is not complete until its section is wri
 code/new_factors/two_stage.py code/uk_model_zoo.py` is empty, enforced by
 `code/tests/test_dfm_isolation.py`.
 
+## Status and verdict so far
+
+**Stage 1 complete (E1, classical Stock-Watson DFM). Stages 2–5 not built.**
+
+| Question | Answer |
+|---|---|
+| Did the MoM reformulation fix the prior DFM failure? | **Yes.** Prior attempts scored 1.97 / 1.96 / 2.62 against AA's 0.467. E1 scores **0.4462** — a 4.4× improvement in the same model family. |
+| Does E1 beat AutoARIMA standalone? | **Yes, but not significantly.** 0.4462 vs 0.4687 (rel 0.952), DM p = 0.703. |
+| Does E1 beat the frozen production model? | **No.** 0.4462 vs 0.4142. |
+| Does E1 pass the pre-registered selection rule? | **No.** Calm-month overshoot 0.2983 against a 0.0651 threshold — 4.6× production's. |
+| Does E1 work as an overlay member? | **No, decisively.** 0.6571 — worse than predicting zero (0.4621), DM p = 0.014 *against*. |
+| Should anything ship to production? | **No.** Nothing here recommends a change, and production is untouched. |
+
+**The one thing Stage 1 does establish** is that the reformulated DFM is a live research candidate
+rather than the four-times-worse also-ran the repo previously recorded, and that its failure is
+precisely diagnosable rather than diffuse: it is *confidently wrong* in a handful of shock months
+(overlay leg sd 1.32× the residual it predicts; 2022-11 predicted +2.856pp against a realised
+−0.215pp). That is the specific target
+[Plan 2](superpowers/plans/2026-08-20-dfm-plan2-stage2-sv-outliers.md) is written to hit, with an
+explicit instruction to abandon the overlay route if it misses.
+
+---
+
 ## Baselines (this harness, 2015–2024, purged 12+1)
 
 | Model | RMSE | MAE | rel vs AA | Source |
