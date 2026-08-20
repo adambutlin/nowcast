@@ -366,8 +366,27 @@ Stage 5 = E6.
 Every arm runs in **both** modes:
 
 - **standalone** — the DFM forecasts `π_T` directly; YoY rebuilt per §3.2.
-- **overlay** — the DFM's factors predict the **AA residual**, the production framing, so the arm can
-  be scored as a candidate overlay member against TVP and LGBM.
+- **overlay** — the DFM's factors predict the residual left by **AA + RegEvent**, i.e.
+  `actual − (AA + RegEvent)`, so the arm can be scored as a candidate overlay member against TVP
+  and LGBM.
+
+  **The RegEvent term must be in the target, not just the composition** (corrected 2026-08-20).
+  Production is `AA + λ·Overlay + RegEvent`. Training a candidate overlay on the AA-only residual
+  asks it to explain the Ofgem cap step that RegEvent already prices arithmetically — the overlay
+  would earn credit for predicting reset months, and RegEvent would then add the same step again.
+  That measures redundancy as skill and double-counts it in the composed forecast. The correct
+  target for a *new* member is what production does not already explain.
+
+  Note this differs from frozen production's own internal convention: `production.model.
+  _residual_history` returns the AA-only residual and adds `reg_events.reg_event_step` separately,
+  so production's TVP and LGBM legs do carry that double-count. Production is frozen and not
+  changed here; the point is that a new member must not inherit the flaw. `reg_event_step(nd)` is
+  causal by construction — `passthrough(before=nd, …)` estimates β from resets strictly before
+  `nd` — so it is walk-forwardable month by month.
+
+  RegEvent is headline-only and nonzero in 23 of 306 months, so for most months the two residual
+  definitions coincide; the difference concentrates in exactly the cap-reset months where the
+  overlay's apparent skill would otherwise be spurious.
 
 6 arms × 2 modes = **12 configs**.
 
@@ -433,7 +452,12 @@ changes what the numbers mean:
 
 1. AutoARIMA
 2. Frozen production replication (`AA + 0.25·TVP + 0.25·LGBM + RegEvent`, re-run on this branch's
-   harness so the comparison is same-code, same-windows)
+   harness so the comparison is same-code, same-windows). **Two variants, and they are not
+   interchangeable:** RegEvent-*excluded* reproduces the documented 2015–2024 figures (README's
+   AA 0.467 / rel-RMSE 0.89 predate the 2026-08-19 RegEvent layer) and is the headline baseline;
+   RegEvent-*included* is the only fair opponent for an overlay arm, since an overlay trained on
+   the `AA + RegEvent` residual must be scored against a production that also prices the step.
+   Reporting an overlay arm against the RegEvent-excluded baseline would flatter it.
 3. Classical Stock-Watson DFM (= E1)
 4. DFM + SV (= E2)
 5. DFM + SV + robust outliers (= E3)
@@ -467,7 +491,7 @@ Plus AR(1) as the floor benchmark and the live scorecard values for May–Jul 20
 
 | Mode | Label | Purge + embargo |
 |---|---|---|
-| Overlay (factors → AA residual) | `cpi_yoy` residual — a genuine 12-month difference | **12 + 1** (identical to production) |
+| Overlay (factors → AA + RegEvent residual) | `cpi_yoy` residual — a genuine 12-month difference | **12 + 1** (identical to production) |
 | Standalone (factors → `π_T`) | MoM — a **1-month** difference | **1 + 1** |
 
 Forcing 12+1 on a 1-month label would discard real information rather than prevent leakage — the

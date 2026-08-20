@@ -3500,6 +3500,22 @@ Deliberately deferred, each to its own plan, because the spec's §4.3 gate forbi
 
 - **Plan 2 — Stage 2.** E2 stochastic volatility (Kim-Shephard-Chib mixture + FFBS) and E3 Stock-Watson outlier mixture. Adds `sampler.draw_sv` and `sampler.draw_outliers`, flips the `NotImplementedError` guards in `DFMConfig`.
 - **Plan 3 — Stages 3–5.** E4 full VAR under the Minnesota prior (the `draw_factor_ar(diagonal=False)` path already exists and is tested), E5 block-restricted + spike-and-slab loadings via `loading_mask`, E6 hierarchical shrinkage. Also the overlay mode wired end-to-end, and the exogenous reg block `gamma_z`.
+
+  **Overlay target — corrected 2026-08-20, do not lose this.** The overlay arm predicts
+  `actual − (AA + RegEvent)`, NOT the AA-only residual. Production is `AA + λ·Overlay + RegEvent`,
+  so training a candidate on the AA-only residual asks it to explain the Ofgem cap step RegEvent
+  already prices arithmetically: the overlay earns credit for reset months and RegEvent then adds
+  the same step again — redundancy measured as skill, and double-counted in the composition.
+  `production.model._residual_history` uses the AA-only residual, so frozen production carries this
+  double-count in its own TVP/LGBM legs; production is frozen and unchanged, but a new member must
+  not inherit the flaw. `reg_events.reg_event_step(nd)` is causal — `passthrough(before=nd, …)`
+  uses only prior resets — so it is walk-forwardable month by month.
+
+  Consequence for `benchmarks.py`: `production_backtest` currently EXCLUDES RegEvent, which is
+  correct for reproducing the documented AA 0.467 / rel-RMSE 0.89 (those predate the 2026-08-19
+  layer) and is the headline baseline. Plan 3 must add a RegEvent-INCLUDED variant, because an
+  overlay arm trained on the `AA + RegEvent` residual can only fairly be scored against a
+  production that also prices the step. Scoring it against the excluded variant would flatter it.
 - **Plan 4 — evaluation layer.** Bańbura-Modugno news decomposition, parameter-stability paths, the T-30 → R-1 forecast path, leave-one-block-out ablations, figures, `docs/dfm_model_card.md`, K-sensitivity, the standalone 12+1 purge sensitivity, and the May–Jul 2026 blind scoring.
 
 ---
