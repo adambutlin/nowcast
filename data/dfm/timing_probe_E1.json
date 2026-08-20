@@ -1,0 +1,22 @@
+{
+  "seconds_per_fit": 44.544850083333586,
+  "seconds_first_fit": 43.21715033300097,
+  "seconds_per_warm_fit": 45.20869995849989,
+  "warm_starts_used": 2,
+  "n_probe_months": 3,
+  "probe_months": [
+    "2024-10-31",
+    "2024-11-30",
+    "2024-12-31"
+  ],
+  "n_train_rows": 336,
+  "n_series": 36,
+  "projected_hours_full_sweep": 18.07684148464829,
+  "projected_hours_if_first_fit_uses_draws_first": 18.2929272363133,
+  "arm": "E1",
+  "mode": "standalone",
+  "draws": 800,
+  "burn": 200,
+  "n_configs": 12,
+  "n_months_full": 120
+}
