@@ -1600,7 +1600,7 @@ from dfm import state_space as SS
 def simulate(T=200, K=2, M=6, seed=0):
     """Generate factors, loadings and observations from a known DFM."""
     rng = np.random.default_rng(seed)
-    Phi = np.diag([0.7, 0.5])
+    Phi = np.diag([0.7, 0.5][:K])   # K may be 1 (the statsmodels cross-check)
     Lam = rng.normal(size=(M, K))
     Lam[:K, :K] = np.tril(Lam[:K, :K])
     np.fill_diagonal(Lam[:K, :K], np.abs(np.diag(Lam[:K, :K])) + 0.5)
@@ -1905,7 +1905,7 @@ def simulation_smoother(y, Lam, Q_f, Phi, rho, sig, rng):
 PYTHONPATH=code $Q -m pytest code/tests/test_dfm_state_space.py -q
 ```
 
-Expected: `9 passed`. The statsmodels log-likelihood comparison is the one that catches sign and scaling errors — if it fails, fix the filter, not the test.
+Expected: `8 passed`. The statsmodels log-likelihood comparison is the one that catches sign and scaling errors — if it fails, fix the filter, not the test.
 
 **If numba rejects `_filter_core`** (a `TypingError` on `np.outer` or the matmuls): drop the `@njit(cache=True)` decorator, confirm the tests pass in pure numpy, and re-time it in Task 14. Correctness first — the filter is called once per Gibbs iteration, so a slow filter changes the budget, not the results. Record the decision in `docs/dfm_backtest.md` under Compute.
 
