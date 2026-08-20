@@ -170,3 +170,92 @@ known double count even when its measured cost is zero.
   it; no series exceeded the 6-month DEAD threshold at the 2026-06 as-of date.
 - `global_supply_chain_pressure` remains an expected drop (xlsx engine error), leaving 8 of 9
   production-pinned factors live — matching production's own `OPTIONAL_PINNED` handling.
+
+---
+
+## Overlay test — (AA + RegEvent) + DFM vs the frozen production model
+
+Requested 2026-08-20, outside Plan 1's scope. E1 in **overlay mode**: the DFM's factors predict the
+`actual − (AA + RegEvent)` residual, purge 12+1 (production's own discipline, since the residual is a
+genuine 12-month difference). 120/120 months, 35.5 s/fit, 71 min.
+
+| Model | RMSE | MAE | rel vs AA | shock 22–23 | calm | pre-2020 |
+|---|---|---|---|---|---|---|
+| AutoARIMA | 0.4687 | 0.3205 | 1.000 | 0.7715 | 0.3546 | 0.1908 |
+| AA + RegEvent | 0.4621 | 0.3172 | 0.986 | 0.7589 | 0.3507 | 0.1908 |
+| Production (no RegEvent) | 0.4142 | 0.2864 | 0.884 | 0.6536 | 0.3281 | 0.1734 |
+| **Production + RegEvent [FROZEN]** | **0.4073** | **0.2831** | **0.869** | 0.6395 | 0.3242 | 0.1734 |
+| (AA+RegEvent) + DFM, λ=1 | 0.6571 | 0.4136 | 1.402 | **1.3049** | 0.3378 | 0.2280 |
+| (AA+RegEvent) + 0.5·DFM | 0.4710 | 0.3243 | 1.005 | 0.8300 | 0.3241 | 0.1812 |
+| AA+RegEvent + 0.5·(TVP,LGBM,DFM) | 0.4119 | 0.2887 | 0.879 | 0.6587 | 0.3220 | 0.1729 |
+| AA+RegEvent + 0.5·(TVP,LGBM) | 0.4073 | 0.2831 | 0.869 | 0.6395 | 0.3242 | 0.1734 |
+
+Diebold-Mariano vs the frozen model: λ=1 **stat +2.493, p = 0.014** (significantly *worse*);
+λ=0.5 stat +1.587, p = 0.115; three-leg ensemble stat +0.400, p = 0.690.
+
+### Verdict: rejected
+
+**The DFM overlay is worse than no overlay at all.** Predicting zero for the residual scores 0.4621.
+The DFM's residual forecast scores **0.6571**. It is not merely unhelpful, it is actively harmful,
+and the DM test says so at p = 0.014 — the only statistically significant result in this whole
+exercise, and it is significant in the wrong direction.
+
+**Adding it to the existing legs does not help either.** The three-leg ensemble scores 0.4119 against
+the frozen model's 0.4073 — slightly worse, and indistinguishable (p = 0.690). By spec §7 rule 4, a
+component that does not improve OOS RMSE is dropped regardless of how good the economics look. This
+one is dropped.
+
+### Why it fails — the diagnosis is clean
+
+| leg | corr with true residual | forecast sd | RMSE as residual forecast |
+|---|---|---|---|
+| TVP | **+0.505** | 0.403 | 0.4276 |
+| LGBM | +0.315 | 0.171 | 0.4319 |
+| **DFM** | **+0.269** | **0.600** | **0.6571** |
+| *(zero overlay)* | — | 0.000 | 0.4621 |
+
+True residual sd is 0.455. The DFM leg is **the least informative and the most over-scaled**: worst
+correlation with the truth, yet the largest amplitude — 32% wider than the thing it is predicting,
+where LGBM is a cautious 0.171. It is confidently wrong.
+
+The over-confidence is concentrated, not diffuse:
+
+- Shock window: DFM leg sd **0.784** against true 0.750 — right magnitude, wrong months. Shock RMSE
+  blows out to **1.3049** against AA's 0.7715.
+- Calm window: sd 0.234 against true 0.346 — under-dispersed, and here it is harmless (calm RMSE
+  0.3378, slightly better than AA's 0.3546).
+- Worst single month **2022-11**: the DFM predicted a residual of **+2.856pp** when the realised
+  residual was **−0.215pp**. Wrong sign, 3pp of error, in one month.
+
+Ex-post optimal shrinkage is **λ\* = 0.204**, not production's 0.5. Even at that hindsight-chosen
+value the composed forecast reaches only **0.4388** — better than AA's 0.4621, still well short of
+production's 0.4073. So there is *some* signal in the DFM leg, but not enough to matter, and
+production's λ=0.5 haircut is far too generous for a leg this noisy.
+
+Error correlations with the incumbent legs are 0.578 (TVP) and 0.587 (LGBM) — below the 0.9 that
+killed BVAR, so the DFM is not formally redundant. But non-redundancy is worthless when the leg
+itself is bad: diversifying into a worse forecaster does not help.
+
+### What this does and does not settle
+
+It settles that **E1 is not a viable overlay member**, and it kills the most optimistic reading of
+Stage 1 — that the low error correlation (0.405) implied latent ensemble value. It did not.
+
+It does **not** settle the overlay question for the DFM family, because the failure mode is exactly
+what the later arms exist to fix:
+
+- **Over-confidence that is catastrophic in a few months** is what the Stock-Watson outlier mixture
+  (**E3**) targets. A single month contributing a 3pp error with the wrong sign is the textbook case
+  for fat-tailed innovations.
+- **Uniform confidence across a sample whose volatility doubles** is what stochastic volatility
+  (**E2**) targets. E1 has no mechanism to know that 2022–23 is a different regime from 2016; the
+  measured MoM volatility ratio is 0.688 vs 0.336.
+
+So the honest position is: the minimal arm fails as an overlay, decisively and significantly, and its
+failure is precisely diagnosable as the absence of the two features Stage 2 adds. That is a useful
+negative result, not a dead end — but it is a negative result, and if E2 and E3 do not fix the
+over-confidence, the overlay route should be abandoned rather than tuned.
+
+**RegEvent, separately, earns its place.** AA + RegEvent beats AA (0.4621 vs 0.4687) and frozen
+production beats the RegEvent-free version (0.4073 vs 0.4142) — a 1.7% gain from pure arithmetic on
+5 reset months in the window, consistent with README §4.
