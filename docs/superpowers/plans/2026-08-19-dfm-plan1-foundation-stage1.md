@@ -2695,6 +2695,7 @@ import pandas as pd
 
 import validation as V
 from dfm import config as C
+from dfm.panel import standardize
 
 SHOCK_YEARS = (2022, 2023)
 
@@ -2738,11 +2739,23 @@ def walk_forward(panel, target, model_cls, model_cfg=None, start_year=None,
         if len(train) < 60:
             continue
 
+        # Causal standardisation. The model does not standardise internally —
+        # doing so would need the training cut point, which only the caller knows.
+        # Moments come from months strictly before the test month, so the test
+        # month's own values never influence its own scaling. The nowcast comes
+        # back in z-units and is rescaled by the target's own mu/sd.
+        through = m - pd.offsets.MonthEnd(1)
+        ztrain, mu, sd = standardize(train, through=through)
+
         t0 = time.time()
         model = model_cls(model_cfg) if model_cfg is not None else model_cls()
-        model.fit(train, target=target, warm_start=prev_post if warm_start else None)
-        nc = model.nowcast(train, target=target)
+        model.fit(ztrain, target=target, warm_start=prev_post if warm_start else None)
+        nc = model.nowcast(ztrain, target=target)
         secs = time.time() - t0
+        tmu, tsd = float(mu[target]), float(sd[target])
+        nc = {k: (v * tsd + tmu if k in ("mean", "p05", "p95") else v)
+              for k, v in nc.items()}
+        nc["sd"] = nc["sd"] * tsd
         if warm_start:
             try:
                 prev_post = model.posterior_mean()
