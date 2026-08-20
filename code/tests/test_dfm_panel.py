@@ -115,6 +115,32 @@ class TestAsOf:
         after = P.asof(pd.Timestamp("2024-06-30"), pd.Timestamp("2024-06-10"))
         pd.testing.assert_frame_equal(base, after)
 
+    def test_reg_zero_fill_respects_the_publication_mask(self, monkeypatch):
+        """An unreleased reg month must stay NaN, not be asserted as "no event".
+
+        The zero-fill used to run after the publication mask and overwrite it, so
+        at an intra-month as-of date the current month's event dummies were set to
+        0 before the month had ended — claiming knowledge of an event that had not
+        been observed. That is docs/postmortem_2026_07.md §3 inverted.
+        """
+        months = pd.date_range("2023-01-31", "2024-06-30", freq="ME")
+        monthly = pd.DataFrame({"ofgem_cap_delta": np.zeros(len(months))}, index=months)
+        cal = P.RC.build_calendar(["ofgem_cap_delta"], months)
+        monkeypatch.setattr(P, "_monthly_matrix", lambda names, start=None: monthly)
+        monkeypatch.setattr(P, "load_calendar_cached", lambda: cal)
+        monkeypatch.setattr(P, "PANEL_SERIES", {})
+        monkeypatch.setattr(P, "REG_SERIES", ["ofgem_cap_delta"])
+        P._CACHE.clear()
+
+        # ofgem_cap_delta publishes at month-end (offset 0), so mid-month the
+        # current month is not yet observable.
+        mid = P.asof(pd.Timestamp("2024-06-30"), pd.Timestamp("2024-06-12"))
+        assert np.isnan(mid.loc[pd.Timestamp("2024-06-30"), "ofgem_cap_delta"])
+        assert mid.loc[pd.Timestamp("2024-05-31"), "ofgem_cap_delta"] == 0.0
+
+        end = P.asof(pd.Timestamp("2024-06-30"), pd.Timestamp("2024-06-30"))
+        assert end.loc[pd.Timestamp("2024-06-30"), "ofgem_cap_delta"] == 0.0
+
     def test_standardize_is_causal(self, fake_panel):
         """Means and sds come from the training rows only, never the test row."""
         m = P.asof(pd.Timestamp("2024-06-30"), pd.Timestamp("2024-06-30"))

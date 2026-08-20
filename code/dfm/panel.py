@@ -180,12 +180,24 @@ def asof(ref_month, asof_ts, start=None):
     # Reg series are event dummies: NaN inside their observed span means "no event"
     # (0), but NOT past their last observation — that is how a +13% Ofgem cap reset
     # entered the July-2026 nowcast as a 0 (docs/postmortem_2026_07.md §3).
+    #
+    # The zero-fill must also respect the publication mask. Filling first and
+    # masking never (the original ordering) asserted "no event this month" for a
+    # month that had not finished yet: at as-of 12 June the June cells were set to
+    # 0 even though their release timestamp is 30 June. That is the same postmortem
+    # failure inverted — claiming knowledge of an event that has not been observed.
+    # A month whose reg observation is not yet released stays NaN, and the Kalman
+    # filter simply skips it. (MPC dates and Ofgem caps are in fact announced weeks
+    # ahead; modelling that properly needs announcement-date calendars, which is
+    # Plan 4 work. Until then the conservative reading is the safe one.)
     for rf in REG_SERIES:
         if rf in out.columns and rf in monthly.columns:
             observed = monthly[rf].dropna()
             if len(observed):
-                span = out.index <= observed.index[-1]
-                out.loc[span, rf] = out.loc[span, rf].fillna(0.0)
+                in_span = out.index <= observed.index[-1]
+                released = np.array([_released_by(rf, m, asof_ts) for m in out.index])
+                fillable = in_span & released
+                out.loc[fillable, rf] = out.loc[fillable, rf].fillna(0.0)
 
     # Quarterly: keep the value only in the quarter's final month.
     for name, spec in PANEL_SERIES.items():
