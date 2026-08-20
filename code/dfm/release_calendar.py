@@ -31,6 +31,7 @@ Fallback share is therefore always visible, never silently absorbed.
 """
 import calendar
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -41,6 +42,19 @@ from dfm import config as C
 _UA = {"User-Agent": "Mozilla/5.0 (UK CPI nowcast research; contact via repo)"}
 _RELEASE_URL = "https://www.ons.gov.uk/releases/{slug}/data"
 _MEMO = {}
+
+# Politeness and resilience against the ONS rate limiter. The build makes a few
+# hundred requests against a real public site; without spacing it trips HTTP 429
+# partway through (observed 2026-08-19 on 'consumerpriceinflationukaugust2019').
+_REQUEST_SPACING_SECONDS = 0.35
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_RETRY_BACKOFF_SECONDS = [5.0, 15.0, 45.0]
+_RETRY_MAX_WAIT_SECONDS = 120.0
+
+# The slug stem that most recently resolved, as (stem, uses_full_month_name).
+# ONS naming is stable within an era, so trying last month's winning pattern
+# first collapses the usual 4-8 requests per month down to 1.
+_LAST_GOOD = None
 
 # Empirically, ONS release pages exist from 2016-01 onward; 2015-06 and earlier
 # 404 on every slug pattern (verified 2026-08-19). Months before this are known
@@ -77,17 +91,25 @@ ONS_OTHER_OFFSET_DAYS = {
 }
 
 
+# ONS is not consistent even within a stem: September 2018 was published as
+# "sept2018", not the calendar.month_abbr "sep2018" (found 2026-08-20 while
+# chasing the single mid-sample month that fell back to the rule). Extra
+# spellings are tried after the standard two.
+_EXTRA_MONTH_SPELLINGS = {9: ["sept"]}
+
+
 def slug_candidates(ref_month):
     """ONS release-page slugs to try for a reference month, newest pattern first."""
     m = pd.Timestamp(ref_month)
     full = calendar.month_name[m.month].lower()
     abbr = calendar.month_abbr[m.month].lower()
     year = m.year
+    spellings = [full, abbr] + _EXTRA_MONTH_SPELLINGS.get(m.month, [])
     stems = ["consumerpriceinflationuk", "ukconsumerpriceinflation",
              "ukconsumerpriceindices", "consumerpriceinflation"]
     out = []
     for stem in stems:
-        for mm in (full, abbr):
+        for mm in spellings:
             slug = f"{stem}{mm}{year}"
             if slug not in out:
                 out.append(slug)
@@ -106,15 +128,34 @@ def _fetch_release_page(slug):
     to `rule`, which can predate the true release and admit data early.
     """
     req = urllib.request.Request(_RELEASE_URL.format(slug=slug), headers=_UA)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            body = r.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise RuntimeError(f"ONS fetch failed for slug '{slug}': HTTP {e.code}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"ONS fetch failed for slug '{slug}': {e}") from e
+    body = None
+    for attempt in range(len(_RETRY_BACKOFF_SECONDS) + 1):
+        time.sleep(_REQUEST_SPACING_SECONDS)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                body = r.read()
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            # 429/503 are the site asking us to slow down, not a verdict on
+            # whether this release exists. Back off and retry rather than
+            # failing the whole build — but still raise if it never clears,
+            # because a silent `rule` fallback can predate the true release.
+            if e.code in _RETRYABLE_STATUS and attempt < len(_RETRY_BACKOFF_SECONDS):
+                wait = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    wait = float(wait)
+                except (TypeError, ValueError):
+                    wait = _RETRY_BACKOFF_SECONDS[attempt]
+                time.sleep(min(wait, _RETRY_MAX_WAIT_SECONDS))
+                continue
+            raise RuntimeError(f"ONS fetch failed for slug '{slug}': HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            # Not retried: a connection/DNS/timeout failure is an environment
+            # problem, not the site throttling us. Fail fast and loudly so the
+            # operator fixes it and reruns, rather than sleeping through it.
+            raise RuntimeError(f"ONS fetch failed for slug '{slug}': {e}") from e
 
     try:
         payload = json.loads(body)
@@ -145,12 +186,51 @@ def ons_release_date(ref_month):
         _MEMO[key] = None
         return None
     found = None
-    for slug in slug_candidates(ref_month):
+    for slug in _ordered_candidates(ref_month):
         found = _fetch_release_page(slug)
         if found is not None:
+            _remember_stem(slug, ref_month)
             break
     _MEMO[key] = found
     return found
+
+
+def _stem_of(slug, ref_month):
+    """Strip the month name and year off a slug, leaving the stem."""
+    m = pd.Timestamp(ref_month)
+    for mm in (calendar.month_name[m.month].lower(), calendar.month_abbr[m.month].lower()):
+        suffix = f"{mm}{m.year}"
+        if slug.endswith(suffix):
+            return slug[: -len(suffix)], mm
+    return slug, None
+
+
+def _remember_stem(slug, ref_month):
+    """Cache the (stem, month-name style) that just worked."""
+    global _LAST_GOOD
+    stem, mm = _stem_of(slug, ref_month)
+    if mm is not None:
+        _LAST_GOOD = (stem, mm == calendar.month_name[pd.Timestamp(ref_month).month].lower())
+
+
+def _ordered_candidates(ref_month):
+    """Slug candidates, with the pattern that last worked tried first.
+
+    ONS slug style changes by era but is locally stable, so the stem that
+    resolved the previous month almost always resolves this one. Without this
+    the build issues up to 8 requests per month against a real third-party
+    site and reliably trips its rate limiter.
+    """
+    cands = slug_candidates(ref_month)
+    if _LAST_GOOD is None:
+        return cands
+    stem, use_full = _LAST_GOOD
+    m = pd.Timestamp(ref_month)
+    mm = (calendar.month_name if use_full else calendar.month_abbr)[m.month].lower()
+    preferred = f"{stem}{mm}{m.year}"
+    if preferred in cands:
+        cands = [preferred] + [c for c in cands if c != preferred]
+    return cands
 
 
 def rule_release_date(ref_month):

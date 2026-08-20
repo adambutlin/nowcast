@@ -15,6 +15,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dfm import release_calendar as RC
 
 
+@pytest.fixture(autouse=True)
+def _no_real_backoff(monkeypatch):
+    """Keep retry/politeness delays out of the unit tests.
+
+    The real schedule (0.35s spacing, 5/15/45s backoff) exists to avoid tripping
+    the ONS rate limiter during the one-time calendar build. Sleeping through it
+    in tests would add ~65s per retryable-status case and tell us nothing — the
+    retry COUNT is what the tests care about, not the wall time.
+    """
+    monkeypatch.setattr(RC, "_REQUEST_SPACING_SECONDS", 0.0)
+    monkeypatch.setattr(RC, "_RETRY_BACKOFF_SECONDS", [0.0, 0.0, 0.0])
+
+
 class _FakeResponse:
     """Minimal stand-in for the `http.client.HTTPResponse` context manager."""
 
@@ -38,6 +51,14 @@ class TestSlugCandidates:
         assert "ukconsumerpriceinflationjune2019" in RC.slug_candidates(pd.Timestamp("2019-06-30"))
         assert "consumerpriceinflationukmarch2022" in RC.slug_candidates(pd.Timestamp("2022-03-31"))
         assert "consumerpriceinflationuknovember2024" in RC.slug_candidates(pd.Timestamp("2024-11-30"))
+
+    def test_september_sept_variant_is_a_candidate(self):
+        """ONS published 2018-09 as 'sept2018', not calendar.month_abbr 'sep2018'.
+
+        That single spelling was the only mid-sample month falling back to the
+        rule in the real build (found 2026-08-20)."""
+        cands = RC.slug_candidates(pd.Timestamp("2018-09-30"))
+        assert "ukconsumerpriceinflationsept2018" in cands
 
     def test_newest_pattern_is_tried_first(self):
         """Most releases are recent, so the modern stem should be candidate 0."""
