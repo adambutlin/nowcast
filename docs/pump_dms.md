@@ -64,6 +64,56 @@ The state profile is the whole argument for switching:
 No single pooled model expresses both ends of that. A model that trusts oil in week 1 and
 trusts the partial mean in week 5 is exactly what deterministic switching buys.
 
+### The switching, made visible
+
+Fitted coefficients, one Ridge per state (`partial_mean` and `last_week` are summed — at
+low `s` they are near-identical series, at `s=1` literally the same number, so Ridge splits
+the weight between them arbitrarily; the sum is the meaningful quantity and sits near 1.0
+throughout, as it must for a level):
+
+| s | pump-level terms (summed) | Brent momentum |
+|---|---|---|
+| 1 | 1.248 | **4.170** |
+| 2 | 0.918 | 2.293 |
+| 3 | 0.968 | 0.945 |
+| 4 | 0.991 | 0.583 |
+| 5 | 0.993 | **−0.051** |
+
+The oil coefficient decays 4.17 → 0. In week 1 oil carries most of the forward information
+about the three unpublished weeks; by week 5 there are no unpublished weeks and oil is
+worth nothing. A pooled model must pick one number for that coefficient and is wrong at
+both ends.
+
+### Why the RW degrades as the month advances
+
+The target is the month's **mean** — a *central* statistic. The RW reports the **last
+published week** — an *endpoint* statistic.
+
+| s | \|partial mean − target\| | \|last week − target\| |
+|---|---|---|
+| 1 | 1.121 | 1.121 |
+| 2 | 0.798 | 0.530 |
+| 3 | 0.452 | 0.375 |
+| 4 | **0.121** | **0.907** |
+| 5 | **0.000** | **1.392** |
+
+Early in the month the endpoint sits near the centre, so the RW looks fine — at `s=3` it
+beats the partial mean (0.375 vs 0.452). As the month advances the last week moves toward
+the *end* of the window while the mean stays at the centre, so in any trending month the
+gap widens mechanically.
+
+The RW's error is therefore **specification error, not estimation error**: it answers "what
+is the price now?" when the question is "what was the average price this month?" More weeks
+cannot shrink it, because it only ever reads one number. The partial mean has the opposite
+property — it is a consistent estimator of the target, and at `s=5` it is not approximately
+right but *exactly* right, since the mean of all five weeks IS the month's mean.
+
+Note the terminal state: DMS scores 0.044 at `s=5` where the plain partial mean scores
+0.000, i.e. the fitted model is slightly WORSE than doing nothing, because Ridge
+regularisation pulls the coefficient off exactly 1.0. A real implementation should
+hard-code the terminal state rather than fit it — the same "dumb rules where data is thin"
+instinct that has Cleveland Fed forecasting food with a moving average.
+
 ## The tax-wedge transform did not help — and that prediction was wrong
 
 The UK pump price is `pump = (wholesale + duty) × (1 + VAT)`, with duty a fixed
