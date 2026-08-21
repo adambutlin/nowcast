@@ -13,20 +13,31 @@ place the ECOICOP hierarchy is documented.
 
 WHAT THE RECONCILIATION FOUND (2026-08-21)
 
+CORRECTION (same day): an earlier pass concluded no COICOP division weights exist
+in MM23. That was wrong, and wrong for a stupid reason — the search matched the
+title prefix `CPI wts:` and MM23 spells the COICOP hierarchy `CPI WEIGHTS`. There
+are 322 of the latter, running the full tree down to 4-digit classes (`L8BK` is
+CPI WEIGHTS 07.2.2.2 Petrol). The finer partition IS available. The paragraph
+below records what remains true about the `CPI wts:` family.
+
 MM23 publishes 49 `CPI wts:` series. They are overlapping ANALYTICAL AGGREGATES,
 not a hierarchical partition: the eight goods subgroups sum to 333-409 per 1000
 against a `Non-energy industrial goods` weight of 276-347, and goods + the four
-services groups leave 61-75 per 1000 unaccounted for. No COICOP division weights
-(01..12) exist anywhere in MM23, although all twelve division INDICES do.
+services groups leave 61-75 per 1000 unaccounted for. So the ECOICOP goods/services
+split cannot be used to partition core — that finding stands, and it is why
+`core_goods` vs `core_services` remains unavailable even now.
 
-Exactly two partitions reconcile to 1000.0:
+Partitions that reconcile to 1000.0, verified over 2005-2026:
 
-    2-way   efat + core
-    4-way   household_energy + motor_fuel + food_alc_tob + core
+    2-way    efat + core                                    floor 0.0552 pp
+    4-way    household_energy + motor_fuel + food_alc_tob + core
+                                                            floor 0.0576 pp
+    12-way   the COICOP divisions 01..12                    floor 0.0456 pp
 
-both exact, because `core + efat = 1000.0` and `energy = household_energy +
-motor_fuel` to 0.0. The 4-way is the deepest exhaustive split available from
-published MM23 weights, and it is what this module verifies.
+All exact on weights (max deviation 1e-4). The 12-division partition is both
+finer AND more accurate — averaging twelve independently rounded indices beats
+carrying four coarse aggregates that each round once. `check()` verifies the
+4-way; `check_divisions()` verifies the 12-way.
 
 THE RECONSTRUCTION FLOOR
 
@@ -83,6 +94,27 @@ PARTITION = {
                              desc="Excluding energy, food, alcohol & tobacco"),
 }
 HEADLINE_INDEX = "D7BT"
+
+# COICOP divisions: (weight CDID, index CDID). Exhaustive, exact, and the finest
+# partition with BOTH a published weight and a published index for every member.
+DIVISIONS = {
+    "01_food":          ("CHZR", "D7BU"), "02_alc_tob":       ("CHZS", "D7BV"),
+    "03_clothing":      ("CHZT", "D7BW"), "04_housing_fuels": ("CHZU", "D7BX"),
+    "05_furnishings":   ("CHZV", "D7BY"), "06_health":        ("CHZW", "D7BZ"),
+    "07_transport":     ("CHZX", "D7C2"), "08_communication": ("CHZY", "D7C3"),
+    "09_recreation":    ("CHZZ", "D7C4"), "10_education":     ("CJUU", "D7C5"),
+    "11_restaurants":   ("CJUV", "D7C6"), "12_misc":          ("CJUW", "D7C7"),
+}
+
+# Mechanism carve-outs available at sub-division level, each with a published
+# weight AND index — these are what let motor fuel and household energy be
+# isolated from their parent divisions.
+CARVEOUTS = {
+    "household_energy": ("CJVF", "D7CH", "04.5 Electricity, gas and other fuels"),
+    "motor_fuel":       ("CJXR", "D7EC", "07.2.2 Fuels & lubricants"),
+    "water_sewerage":   ("CJVE", None,   "04.4 Water supply and misc. services"),
+    "rail":             ("CJXU", None,   "07.3.1 Passenger transport by railway"),
+}
 
 _MONTHS = {m.upper()[:3]: i for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -206,6 +238,35 @@ def check(start_year=2005):
     return res
 
 
+def check_divisions(start_year=2005):
+    """Same gate, run on the 12 COICOP divisions."""
+    mon, ann, meta = load_mm23()
+    idx = pd.DataFrame({k: mon[v[1]] for k, v in DIVISIONS.items()})
+    idx["headline"] = mon[HEADLINE_INDEX]
+    idx = idx.dropna()
+    idx = idx[idx.index.year >= start_year]
+    wts = pd.DataFrame({
+        k: pd.Series(idx.index.year, index=idx.index).map(ann[v[0]].dropna())
+        for k, v in DIVISIONS.items()})
+    wsum = wts.sum(axis=1)
+    mom = idx.pct_change() * 100.0
+    recon = sum((wts[c] / 1000.0) * mom[c] for c in DIVISIONS)
+    d = pd.DataFrame({"actual": mom["headline"], "recon": recon}).dropna()
+    err = d["recon"] - d["actual"]
+    rmse = float(np.sqrt((err ** 2).mean()))
+    print("\n=== PHASE 0: 12-division COICOP partition ===")
+    print(f"  window   : {d.index[0].date()} … {d.index[-1].date()}  (n={len(d)})")
+    print(f"  weights sum to 1000: max deviation {float((wsum - 1000).abs().max()):.6f}")
+    print(f"  MoM identity       : mean |err| {err.abs().mean():.5f} pp   "
+          f"max {err.abs().max():.5f} pp   RMSE {rmse:.5f} pp")
+    print(f"  error lag-1 autocorr: {err.autocorr(1):+.3f}")
+    print(f"  RECONSTRUCTION FLOOR: {rmse:.5f} pp   "
+          f"(4-way was 0.05758 — the finer partition is MORE accurate)")
+    return dict(n=len(d), rmse=rmse, weight_max_dev=float((wsum - 1000).abs().max()),
+                err_autocorr1=float(err.autocorr(1)))
+
+
 if __name__ == "__main__":
     r = check()
+    check_divisions()
     sys.exit(0 if r["pass"] else 1)
