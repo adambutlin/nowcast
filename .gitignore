@@ -20,3 +20,4 @@ logs/
 
 # auto-generated core race summary (curated version is docs/core_factor_race.md)
 docs/core_factor_race_auto.md
+data/components/mm23.csv
