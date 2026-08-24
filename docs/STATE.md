@@ -1,6 +1,43 @@
 # STATE — UK CPI Nowcast Project
 
-*Last updated: 2026-06-19*
+*Last updated: 2026-08-24*
+
+> **2026-08-24 — Component-nowcast track opened (`code/components/`); production untouched.**
+> - **Phase 0 passes.** Exact CPI basket partitions verified 2005-2026 from ONS MM23:
+>   4-way (`hh_energy + motor_fuel + food_alc_tob + core`, floor **0.0576pp**) and 12-way
+>   COICOP divisions (floor **0.0456pp**) — the finer partition is also the more accurate.
+>   The reconstruction floor is **published-index rounding**, not aggregation error: residual
+>   lag-1 autocorr −0.42/−0.54 against a theoretical −0.5 for differenced white noise.
+>   Chain-linking tested and ruled out (0.0570 vs 0.0576). Floor is pre-registered.
+> - **Phase 1: component-naive beats AA, rel-RMSE 0.8303, DM 2.071, p=0.019** (n=120,
+>   2015-2024) — and beats frozen production (0.4312/0.9201) with no learner in it. But the
+>   ladder reassigns the credit: **decomposition itself contributes +0.0006, i.e. nothing.**
+>   Working in MoM with a seasonal rule and chaining (no components at all) carries −0.0402
+>   of the −0.0796; the observable mechanisms carry the rest — Ofgem −0.0128, pump −0.0272.
+> - **The energy thread closes.** The pump signal failed three times as a pinned FACTOR
+>   (`energy_fx_race.md`, `energy_passthrough.md`) and is the largest single contributor as a
+>   COMPONENT. **κ=0.75 dropped** and not missed — the basket weight carries what the
+>   aggregate-level haircut was compensating for.
+> - **Correction recorded:** MM23 *does* carry the COICOP weight hierarchy — 322 `CPI WEIGHTS`
+>   series down to 4-digit classes. An earlier pass missed them by matching `CPI wts:`.
+> - **Blocked:** `core_goods` vs `core_services` is unsourceable — the 49 `CPI wts:` analytical
+>   aggregates overlap rather than tile. Docs: `components.md`.
+
+> **2026-08-21 — Factor-level research on the frozen model (research only, nothing shipped).**
+> - **`uk_be5` is mis-constructed** (`fix/uk-be5-breakeven`, NOT merged): `_uk_breakeven`
+>   subtracted the real curve from the BoE *implied inflation* curve, which already IS
+>   nominal−real, giving `nominal − 2·real`. Correlates +0.208 with the true 5Y breakeven and
+>   +0.746 with the NEGATED real yield. Fixed + `uk_be3` registered on the branch; it touches
+>   `factors.py`, a FROZEN_PATHS entry, so it awaits review.
+> - **Energy factors are mis-specified but not missing.** As contemporaneous logret they
+>   correlate ~0.00 with headline CPI; as 12m changes lagged 7-13m, 0.38-0.63 (HAC). Re-specified
+>   TTF would rank #2/50 standalone — but R²=0.68 on the pinned set (corr 0.783 with
+>   `uk_ppi_input`), so the channel is already in the model under another name. Nothing ships.
+> - **`gbpusd` retired as a headline candidate** — three independent tests, three failures.
+> - **`global_supply_chain_pressure` is DEAD in production** since ≥2026-07: NY Fed URL returns
+>   HTML, no CSV fallback exists, degradation is silent. Live runs carry 8 pinned factors, not 9.
+> - **DMS transfers to UK pump prices**, 34% better than a random walk (0.910 vs 1.378 p/l).
+>   Docs: `energy_fx_race.md`, `energy_passthrough.md`, `fx_expectations.md`, `pump_dms.md`.
 
 > **2026-06-19 — MODEL FROZEN; research phase CLOSED (`timing` → `main`).**
 > - **Canonical production model = `code/production/model.py`:**
